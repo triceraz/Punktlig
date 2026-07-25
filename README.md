@@ -41,6 +41,21 @@ python3 -m punktlig.report
 python3 -m unittest discover tests
 ```
 
+The collector is dependency-free. The analysis layer needs a few packages:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install duckdb lightgbm numpy
+
+# move completed days into day-partitioned parquet, prune old raw XML
+.venv/bin/python -m punktlig.compact
+
+# train LightGBM and compare it against the baselines on a time-based split
+.venv/bin/python -m punktlig.train
+```
+
+Completed days are compacted from the hot SQLite database into zstd parquet, which shrinks them by an order of magnitude. The dataset builder reads both tiers transparently, so nothing changes downstream. Exports are verified by row count before any source rows are deleted.
+
 ## Configuration
 
 Everything is configured through environment variables:
@@ -81,7 +96,9 @@ Raw gzipped XML responses are also archived under `data/raw/` so the parsed sche
 
 - [x] Collector: SIRI-ET delta polling, mode filtering, weather and deviation snapshots
 - [x] Dataset builder: replay the archive into training rows without lookahead
-- [ ] Baselines + LightGBM, ablations, learning curve
+- [x] Storage tiering: verified parquet compaction, raw retention, mixed-source replay
+- [x] Training pipeline: LightGBM vs. all baselines on a time-based split
+- [ ] Real results on weeks of data: ablations, learning curve, quantile intervals
 - [ ] Backtest dashboard: error per horizon vs. Entur
 - [ ] Serverless collection (Vercel function + external cron + hosted libSQL)
 - [ ] Live site: realtime map, model vs. Entur per stop, uncertainty bands

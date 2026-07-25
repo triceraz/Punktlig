@@ -9,6 +9,7 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest"]
+analysis = ["duckdb", "lightgbm", "numpy"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
