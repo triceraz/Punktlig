@@ -47,13 +47,31 @@ PARAMS = {
 def load_rows(dataset_path):
     conn = db.connect(dataset_path)
     sql = f"""
-        SELECT {', '.join(FEATURES)}, label_delay_sec, entur_pred_delay_sec
+        SELECT {', '.join(FEATURES)}, label_delay_sec, entur_pred_delay_sec, operating_date
         FROM training_row
         WHERE ABS(label_delay_sec) < {MAX_ABS_DELAY} AND horizon_sec < {MAX_HORIZON}
           AND entur_pred_delay_sec IS NOT NULL AND current_delay_sec IS NOT NULL
         ORDER BY polled_at
     """
     return conn.execute(sql).fetchall()
+
+
+def day_split(rows, valid_days, date_of=lambda r: r[-1]):
+    """Journey-atomic split: the last `valid_days` operating dates become validation.
+
+    Splitting on operating date rather than poll time guarantees that no
+    journey contributes rows to both sides, so a journey running across the
+    boundary cannot leak validation-period outcomes into training.
+    Returns (reordered_rows, split_index, validation_dates), or None when the
+    dataset does not span enough dates for the split to mean anything.
+    """
+    dates = sorted({date_of(r) for r in rows})
+    if len(dates) <= valid_days:
+        return None
+    valid_dates = set(dates[-valid_days:])
+    train_rows = [r for r in rows if date_of(r) not in valid_dates]
+    valid_rows = [r for r in rows if date_of(r) in valid_dates]
+    return train_rows + valid_rows, len(train_rows), sorted(valid_dates)
 
 
 def encode(rows, split):
@@ -72,8 +90,8 @@ def encode(rows, split):
                 X[i, j] = row[j]
         for j, col in enumerate(CATEGORICAL):
             X[i, len(NUMERIC) + j] = vocabs[col].get(row[len(NUMERIC) + j], 0)
-    y = np.array([row[-2] for row in rows], dtype=float)
-    entur = np.array([row[-1] for row in rows], dtype=float)
+    y = np.array([row[-3] for row in rows], dtype=float)
+    entur = np.array([row[-2] for row in rows], dtype=float)
     return X, y, entur, vocabs
 
 
@@ -110,13 +128,26 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Train LightGBM on the replay dataset")
     parser.add_argument("--dataset", default=str(DATASET_PATH))
     parser.add_argument("--out", default=str(MODEL_DIR))
+    parser.add_argument("--valid-days", type=int, default=1,
+                        help="validate on the last N operating dates")
     args = parser.parse_args(argv)
 
     rows = load_rows(args.dataset)
     if len(rows) < 1000:
         print(f"only {len(rows)} usable rows; collect more data before training")
         return 1
-    split = int(len(rows) * 0.8)
+
+    result = day_split(rows, args.valid_days)
+    if result:
+        rows, split, valid_dates = result
+        print(f"day split: validating on {', '.join(valid_dates)}")
+    else:
+        split = int(len(rows) * 0.8)
+        print(
+            "WARNING: dataset spans too few operating dates for a day split; "
+            "falling back to an 80/20 time split. Same-day validation shares "
+            "conditions with training, so treat these numbers as optimistic."
+        )
     X, y, entur, vocabs = encode(rows, split)
     print(f"rows: {len(rows)} (train {split}, valid {len(rows) - split})")
 
