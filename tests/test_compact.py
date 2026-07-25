@@ -28,6 +28,9 @@ OLD_DAY = (TODAY - timedelta(days=5)).isoformat()
 class CompactTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        # Registered as a cleanup (not tearDown) so it runs LIFO after the
+        # per-test connection closes; Windows cannot delete open db files.
+        self.addCleanup(self.tmp.cleanup)
         base = Path(self.tmp.name)
         self.archive = base / "archive.db"
         self.parquet = base / "parquet"
@@ -39,9 +42,6 @@ class CompactTest(unittest.TestCase):
         (self.raw / "et" / "2000-01-01").mkdir(parents=True)
         (self.raw / "et" / "2000-01-01" / "x.xml.gz").write_bytes(b"old")
         (self.raw / "et" / TODAY.isoformat()).mkdir(parents=True)
-
-    def tearDown(self):
-        self.tmp.cleanup()
 
     def _compact(self):
         from punktlig.compact import compact
@@ -64,6 +64,7 @@ class CompactTest(unittest.TestCase):
             self.assertEqual(count, expected, name)
 
         conn = db.connect(self.archive)
+        self.addCleanup(conn.close)
         remaining_days = [
             r[0] for r in conn.execute("SELECT DISTINCT substr(polled_at, 1, 10) FROM poll")
         ]
@@ -97,6 +98,7 @@ class CompactTest(unittest.TestCase):
         self.assertEqual(after, 6)
 
         conn = db.connect(after_path)
+        self.addCleanup(conn.close)
         by_day = dict(
             conn.execute(
                 "SELECT operating_date, COUNT(*) FROM training_row GROUP BY 1"

@@ -117,24 +117,31 @@ def compact(db_path=DB_PATH, parquet_dir=PARQUET_DIR, keep_days=HOT_KEEP_DAYS,
             raw_dir=RAW_DIR, raw_keep_days=RAW_KEEP_DAYS, today=None):
     import duckdb
 
+    # Connections are closed in finally-blocks: Windows cannot delete a
+    # database file while any handle (ours or duckdb's attach) is still open.
     conn = db.connect(db_path)
-    days = eligible_days(conn, keep_days, today=today)
-    if days:
-        # Phase 1: export and verify everything with a read-only attach.
-        duck = duckdb.connect()
-        duck.execute("INSTALL sqlite; LOAD sqlite;")
-        duck.execute(f"ATTACH '{db_path}' AS src (TYPE sqlite, READ_ONLY)")
-        for day in days:
-            export_day(duck, conn, day, parquet_dir)
-        duck.close()
-        # Phase 2: only after every export is verified, delete and reclaim space.
-        for day in days:
-            delete_day(conn, day)
-            _log(f"compacted {day}")
-        conn.execute("VACUUM")
-        conn.commit()
-    else:
-        _log("no completed days old enough to compact")
+    try:
+        days = eligible_days(conn, keep_days, today=today)
+        if days:
+            # Phase 1: export and verify everything with a read-only attach.
+            duck = duckdb.connect()
+            try:
+                duck.execute("INSTALL sqlite; LOAD sqlite;")
+                duck.execute(f"ATTACH '{db_path}' AS src (TYPE sqlite, READ_ONLY)")
+                for day in days:
+                    export_day(duck, conn, day, parquet_dir)
+            finally:
+                duck.close()
+            # Phase 2: only after every export is verified, delete and reclaim space.
+            for day in days:
+                delete_day(conn, day)
+                _log(f"compacted {day}")
+            conn.execute("VACUUM")
+            conn.commit()
+        else:
+            _log("no completed days old enough to compact")
+    finally:
+        conn.close()
 
     removed = prune_raw(raw_dir, raw_keep_days, today=today)
     if removed:

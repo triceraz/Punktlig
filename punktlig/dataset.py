@@ -135,7 +135,11 @@ SQLITE_CALL_SQL = f"""
 
 
 def _open_sources(archive_path, parquet_dir):
-    """Return (weather_rows, call_rows) over hot SQLite plus any compacted Parquet."""
+    """Return (weather_rows, call_rows, close) over hot SQLite plus any compacted Parquet.
+
+    The caller must invoke close() after consuming the rows; on Windows an
+    open connection blocks deletion of the underlying database file.
+    """
     call_files = _parquet_files(parquet_dir, "calls")
     if not call_files:
         src = db.connect(archive_path)
@@ -145,7 +149,7 @@ def _open_sources(archive_path, parquet_dir):
         call_rows = src.execute(
             f"SELECT {CALL_COLS} FROM ({SQLITE_CALL_SQL.format(prefix='')}) {CALL_ORDER}"
         )
-        return weather_rows, call_rows
+        return weather_rows, call_rows, src.close
 
     import duckdb  # analysis extra; only needed once parquet files exist
 
@@ -167,7 +171,7 @@ def _open_sources(archive_path, parquet_dir):
         con, weather_sql + " ORDER BY polled_at", [weather_files] if weather_files else None
     )
     call_rows = _iter_duck(con, call_sql + " " + CALL_ORDER, [call_files])
-    return weather_rows, call_rows
+    return weather_rows, call_rows, con.close
 
 
 def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR):
@@ -176,7 +180,7 @@ def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR):
     out.execute("DELETE FROM training_row")  # rebuilds are idempotent
     out.commit()
 
-    weather_rows, cursor = _open_sources(archive_path, parquet_dir)
+    weather_rows, cursor, close_sources = _open_sources(archive_path, parquet_dir)
     weather = WeatherIndex(weather_rows)
 
     n_rows = 0
@@ -285,6 +289,8 @@ def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR):
                     flush()
 
     flush()
+    close_sources()
+    out.close()
     return n_rows
 
 
