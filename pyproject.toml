@@ -1,0 +1,14 @@
+[project]
+name = "punktlig"
+version = "0.1.0"
+description = "Collect Norwegian public transport realtime data and beat the official delay predictions"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
