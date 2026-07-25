@@ -29,7 +29,10 @@ CALL_COLS = (
     "call_type, stop_ref, stop_name, order_no, aimed_arr, expected_arr, "
     "actual_arr, aimed_dep, expected_dep, actual_dep, cancelled, call_cancelled"
 )
-CALL_ORDER = "ORDER BY journey_ref, operating_date, poll_id, order_no"
+# Snapshots are ordered by wall-clock time, not by poll_id: poll_id is only
+# unique within one collector database, and archives from several machines
+# (or collection eras) must interleave correctly when merged in parquet.
+CALL_ORDER = "ORDER BY journey_ref, operating_date, polled_at, poll_id, order_no"
 WEATHER_COLS = "polled_at, forecast_time, air_temp, precip_mm, wind_mps"
 
 SCHEMA = """
@@ -196,19 +199,24 @@ def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR):
             batch = []
 
     for (journey_ref, operating_date), rows in groupby(cursor, key=lambda r: (r[0], r[1])):
-        snapshots = [(poll_id, list(poll_rows)) for poll_id, poll_rows in groupby(rows, key=lambda r: r[2])]
+        # A snapshot is keyed by (polled_at, poll_id): chronological first, with
+        # poll_id only as a tiebreaker within a single source database.
+        snapshots = [
+            (snap_key, list(poll_rows))
+            for snap_key, poll_rows in groupby(rows, key=lambda r: (r[3], r[2]))
+        ]
 
         # Ground truth: last seen actual time per stop order, remembering which
-        # poll it came from so labels can be required to be later than features.
+        # snapshot it came from so labels can be required to be later than features.
         truth = {}
-        for poll_id, poll_rows in snapshots:
+        for snap_key, poll_rows in snapshots:
             for r in poll_rows:
                 if r[6] == "recorded":
                     actual = _ts(r[12]) or _ts(r[15])  # prefer arrival, fall back to departure
                     if actual:
-                        truth[r[9]] = (actual, poll_id)
+                        truth[r[9]] = (actual, snap_key)
 
-        for poll_id, poll_rows in snapshots:
+        for snap_key, poll_rows in snapshots:
             polled_at = _ts(poll_rows[0][3])
             if poll_rows[0][16]:  # journey cancelled: no meaningful labels
                 continue
@@ -236,7 +244,7 @@ def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR):
                 if aimed is None or expected is None:
                     continue
                 label = truth.get(r[9])
-                if not label or label[1] <= poll_id:
+                if not label or label[1] <= snap_key:
                     continue  # no ground truth yet, or truth not strictly later than T
                 actual_ts_val = label[0]
                 horizon = _secs(expected, polled_at)
@@ -245,7 +253,7 @@ def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR):
                 temp, precip, wind = weather.lookup(polled_at, expected)
                 batch.append(
                     [
-                        poll_id,
+                        snap_key[1],
                         polled_at.isoformat(),
                         journey_ref,
                         operating_date,
