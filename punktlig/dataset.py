@@ -15,11 +15,22 @@ from bisect import bisect_right
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from itertools import groupby
+from pathlib import Path
 
 from . import db
-from .config import DATA_DIR, DB_PATH
+from .config import DATA_DIR, DB_PATH, PARQUET_DIR
 
 OUT_PATH = DATA_DIR / "dataset.db"
+
+# The replay reads the same 18 columns in the same order regardless of where
+# the rows live (hot SQLite, compacted Parquet, or both).
+CALL_COLS = (
+    "journey_ref, operating_date, poll_id, polled_at, line_ref, direction, "
+    "call_type, stop_ref, stop_name, order_no, aimed_arr, expected_arr, "
+    "actual_arr, aimed_dep, expected_dep, actual_dep, cancelled, call_cancelled"
+)
+CALL_ORDER = "ORDER BY journey_ref, operating_date, poll_id, order_no"
+WEATHER_COLS = "polled_at, forecast_time, air_temp, precip_mm, wind_mps"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS training_row (
@@ -71,12 +82,8 @@ def _floor_hour(dt):
 class WeatherIndex:
     """forecast_time-hour -> [(polled_at, temp, precip, wind)], for as-of-T lookups."""
 
-    def __init__(self, conn):
+    def __init__(self, rows):
         by_hour = defaultdict(list)
-        rows = conn.execute(
-            "SELECT polled_at, forecast_time, air_temp, precip_mm, wind_mps "
-            "FROM weather_snapshot ORDER BY polled_at"
-        )
         for polled_at, forecast_time, temp, precip, wind in rows:
             key = _floor_hour(_ts(forecast_time))
             by_hour[key].append((_ts(polled_at), temp, precip, wind))
@@ -98,28 +105,76 @@ class WeatherIndex:
         return temp, precip, wind
 
 
-def build(archive_path=DB_PATH, out_path=OUT_PATH):
-    src = db.connect(archive_path)
+def _parquet_files(parquet_dir, sub):
+    directory = Path(parquet_dir) / sub
+    return sorted(str(p) for p in directory.glob("*.parquet")) if directory.is_dir() else []
+
+
+def _iter_duck(con, sql, params=None):
+    cur = con.execute(sql, params or [])
+    while True:
+        chunk = cur.fetchmany(50_000)
+        if not chunk:
+            return
+        yield from chunk
+
+
+SQLITE_CALL_SQL = f"""
+    SELECT c.journey_ref, c.operating_date, c.poll_id, p.polled_at,
+           c.line_ref, c.direction, c.call_type, c.stop_ref, c.stop_name,
+           c.order_no, c.aimed_arr, c.expected_arr, c.actual_arr,
+           c.aimed_dep, c.expected_dep, c.actual_dep,
+           c.cancelled, c.call_cancelled
+    FROM {{prefix}}call_snapshot c
+    JOIN {{prefix}}poll p ON p.poll_id = c.poll_id
+    WHERE c.journey_ref IS NOT NULL AND c.order_no IS NOT NULL
+"""
+
+
+def _open_sources(archive_path, parquet_dir):
+    """Return (weather_rows, call_rows) over hot SQLite plus any compacted Parquet."""
+    call_files = _parquet_files(parquet_dir, "calls")
+    if not call_files:
+        src = db.connect(archive_path)
+        weather_rows = src.execute(
+            f"SELECT {WEATHER_COLS} FROM weather_snapshot ORDER BY polled_at"
+        )
+        call_rows = src.execute(
+            f"SELECT {CALL_COLS} FROM ({SQLITE_CALL_SQL.format(prefix='')}) {CALL_ORDER}"
+        )
+        return weather_rows, call_rows
+
+    import duckdb  # analysis extra; only needed once parquet files exist
+
+    con = duckdb.connect()
+    con.execute("INSTALL sqlite; LOAD sqlite;")
+    con.execute(f"ATTACH '{archive_path}' AS src (TYPE sqlite, READ_ONLY)")
+
+    weather_sql = f"SELECT {WEATHER_COLS} FROM src.weather_snapshot"
+    call_sql = SQLITE_CALL_SQL.format(prefix="src.")
+    weather_files = _parquet_files(parquet_dir, "weather")
+    if weather_files:
+        weather_sql += f" UNION ALL SELECT {WEATHER_COLS} FROM read_parquet(?)"
+    call_sql = (
+        f"SELECT {CALL_COLS} FROM ({call_sql}) UNION ALL "
+        f"SELECT {CALL_COLS} FROM read_parquet(?) "
+        "WHERE journey_ref IS NOT NULL AND order_no IS NOT NULL"
+    )
+    weather_rows = _iter_duck(
+        con, weather_sql + " ORDER BY polled_at", [weather_files] if weather_files else None
+    )
+    call_rows = _iter_duck(con, call_sql + " " + CALL_ORDER, [call_files])
+    return weather_rows, call_rows
+
+
+def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR):
     out = db.connect(out_path)
     out.executescript(SCHEMA)
     out.execute("DELETE FROM training_row")  # rebuilds are idempotent
     out.commit()
 
-    weather = WeatherIndex(src)
-
-    cursor = src.execute(
-        """
-        SELECT c.journey_ref, c.operating_date, c.poll_id, p.polled_at,
-               c.line_ref, c.direction, c.call_type, c.stop_ref, c.stop_name,
-               c.order_no, c.aimed_arr, c.expected_arr, c.actual_arr,
-               c.aimed_dep, c.expected_dep, c.actual_dep,
-               c.cancelled, c.call_cancelled
-        FROM call_snapshot c
-        JOIN poll p ON p.poll_id = c.poll_id
-        WHERE c.journey_ref IS NOT NULL AND c.order_no IS NOT NULL
-        ORDER BY c.journey_ref, c.operating_date, c.poll_id, c.order_no
-        """
-    )
+    weather_rows, cursor = _open_sources(archive_path, parquet_dir)
+    weather = WeatherIndex(weather_rows)
 
     n_rows = 0
     batch = []

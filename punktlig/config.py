@@ -37,3 +37,9 @@ MAX_PAGES = int(os.environ.get("PUNKTLIG_MAX_PAGES", "20"))
 WEATHER_EVERY = int(os.environ.get("PUNKTLIG_WEATHER_EVERY", "3300"))
 SX_EVERY = int(os.environ.get("PUNKTLIG_SX_EVERY", "3300"))
 LINES_EVERY = int(os.environ.get("PUNKTLIG_LINES_EVERY", str(24 * 3600)))
+
+# Storage tiering: completed days move from hot SQLite to day-partitioned
+# Parquet, and raw XML is pruned after a retention window.
+PARQUET_DIR = Path(os.environ.get("PUNKTLIG_PARQUET", DATA_DIR / "parquet"))
+HOT_KEEP_DAYS = int(os.environ.get("PUNKTLIG_HOT_KEEP_DAYS", "7"))
+RAW_KEEP_DAYS = int(os.environ.get("PUNKTLIG_RAW_KEEP_DAYS", "30"))

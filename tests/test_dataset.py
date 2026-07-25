@@ -20,32 +20,32 @@ from punktlig.dataset import build
 D = "2026-07-25"
 
 
-def call(**kw):
-    base = dict(
-        recorded_at=f"{D}T12:00:00+02:00",
-        line_ref="RUT:Line:12",
-        direction="1",
-        journey_ref="RUT:ServiceJourney:test1",
-        operating_date=D,
-        operator_ref="RUT:Operator:220",
-        monitored=1,
-        cancelled=0,
-        call_cancelled=0,
-    )
-    base.update(kw)
-    return base
-
-
-def seed_archive(path):
+def seed_archive(path, day=D):
+    """Insert the three-poll scenario for the given operating day."""
     conn = db.connect(path)
+
+    def call(**kw):
+        base = dict(
+            recorded_at=f"{day}T12:00:00+02:00",
+            line_ref="RUT:Line:12",
+            direction="1",
+            journey_ref="RUT:ServiceJourney:test1",
+            operating_date=day,
+            operator_ref="RUT:Operator:220",
+            monitored=1,
+            cancelled=0,
+            call_cancelled=0,
+        )
+        base.update(kw)
+        return base
 
     weather = [
         # issued 09:00Z for the 10Z hour, superseded before the polls start
-        {"polled_at": f"{D}T09:00:00+00:00", "forecast_time": f"{D}T10:00:00Z", "air_temp": 10.0},
+        {"polled_at": f"{day}T09:00:00+00:00", "forecast_time": f"{day}T10:00:00Z", "air_temp": 10.0},
         # issued 09:59Z: the newest forecast available at poll 1 (10:00:30Z)
-        {"polled_at": f"{D}T09:59:00+00:00", "forecast_time": f"{D}T10:00:00Z", "air_temp": 12.0},
+        {"polled_at": f"{day}T09:59:00+00:00", "forecast_time": f"{day}T10:00:00Z", "air_temp": 12.0},
         # issued 10:01Z: exists in the archive but is in poll 1's future
-        {"polled_at": f"{D}T10:01:00+00:00", "forecast_time": f"{D}T10:00:00Z", "air_temp": 99.0},
+        {"polled_at": f"{day}T10:01:00+00:00", "forecast_time": f"{day}T10:00:00Z", "air_temp": 99.0},
     ]
     for w in weather:
         w.setdefault("lat", 59.9)
@@ -54,39 +54,42 @@ def seed_archive(path):
 
     stop1_recorded = call(
         call_type="recorded", stop_ref="NSR:Quay:1", stop_name="A", order_no=1,
-        aimed_dep=f"{D}T11:58:00+02:00", actual_dep=f"{D}T12:00:00+02:00",
+        aimed_dep=f"{day}T11:58:00+02:00", actual_dep=f"{day}T12:00:00+02:00",
     )
     stop2_estimated = call(
         call_type="estimated", stop_ref="NSR:Quay:2", stop_name="B", order_no=2,
-        aimed_arr=f"{D}T12:03:00+02:00", expected_arr=f"{D}T12:05:00+02:00",
+        aimed_arr=f"{day}T12:03:00+02:00", expected_arr=f"{day}T12:05:00+02:00",
     )
     stop3_estimated = call(
         call_type="estimated", stop_ref="NSR:Quay:3", stop_name="C", order_no=3,
-        aimed_arr=f"{D}T12:06:00+02:00", expected_arr=f"{D}T12:08:00+02:00",
+        aimed_arr=f"{day}T12:06:00+02:00", expected_arr=f"{day}T12:08:00+02:00",
     )
     stop2_recorded = call(
         call_type="recorded", stop_ref="NSR:Quay:2", stop_name="B", order_no=2,
-        aimed_arr=f"{D}T12:03:00+02:00", actual_arr=f"{D}T12:05:30+02:00",
+        aimed_arr=f"{day}T12:03:00+02:00", actual_arr=f"{day}T12:05:30+02:00",
     )
     stop3_recorded = call(
         call_type="recorded", stop_ref="NSR:Quay:3", stop_name="C", order_no=3,
-        aimed_arr=f"{D}T12:06:00+02:00", actual_arr=f"{D}T12:09:00+02:00",
+        aimed_arr=f"{day}T12:06:00+02:00", actual_arr=f"{day}T12:09:00+02:00",
     )
     cancelled_journey = call(
         journey_ref="RUT:ServiceJourney:dead", cancelled=1,
         call_type="estimated", stop_ref="NSR:Quay:9", stop_name="X", order_no=2,
-        aimed_arr=f"{D}T12:10:00+02:00", expected_arr=f"{D}T12:10:00+02:00",
+        aimed_arr=f"{day}T12:10:00+02:00", expected_arr=f"{day}T12:10:00+02:00",
     )
 
     polls = [
-        (f"{D}T10:00:30+00:00", [stop1_recorded, stop2_estimated, stop3_estimated, cancelled_journey]),
-        (f"{D}T10:02:00+00:00", [stop1_recorded, stop2_recorded, stop3_estimated]),
-        (f"{D}T10:05:00+00:00", [stop1_recorded, stop2_recorded, stop3_recorded]),
+        (f"{day}T10:00:30+00:00", [stop1_recorded, stop2_estimated, stop3_estimated, cancelled_journey]),
+        (f"{day}T10:02:00+00:00", [stop1_recorded, stop2_recorded, stop3_estimated]),
+        (f"{day}T10:05:00+00:00", [stop1_recorded, stop2_recorded, stop3_recorded]),
     ]
+    poll_ids = []
     for polled_at, calls in polls:
         poll_id = db.insert_poll(conn, polled_at=polled_at, feed="et", dataset="RUT")
         db.insert_calls(conn, [dict(c, poll_id=poll_id) for c in calls])
+        poll_ids.append(poll_id)
     conn.close()
+    return poll_ids
 
 
 class DatasetBuildTest(unittest.TestCase):
@@ -96,7 +99,10 @@ class DatasetBuildTest(unittest.TestCase):
         archive = Path(cls.tmp.name) / "archive.db"
         out = Path(cls.tmp.name) / "dataset.db"
         seed_archive(archive)
-        cls.n_written = build(archive_path=archive, out_path=out)
+        cls.n_written = build(
+            archive_path=archive, out_path=out,
+            parquet_dir=Path(cls.tmp.name) / "no-parquet",
+        )
         conn = db.connect(out)
         cols = [c[1] for c in conn.execute("PRAGMA table_info(training_row)")]
         cls.rows = [dict(zip(cols, r)) for r in conn.execute("SELECT * FROM training_row")]
