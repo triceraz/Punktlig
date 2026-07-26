@@ -30,6 +30,7 @@ NUMERIC = [
     "horizon_sec", "horizon_stops", "order_no", "dow", "hour",
     "current_delay_sec", "delay_trend_sec", "n_recorded",
     "fc_air_temp", "fc_precip_mm", "fc_wind_mps",
+    "sched_runtime_sec", "seg_slack_sec",
 ]
 CATEGORICAL = ["line_ref", "direction", "stop_ref"]
 FEATURES = NUMERIC + CATEGORICAL
@@ -130,7 +131,20 @@ def main(argv=None):
     parser.add_argument("--out", default=str(MODEL_DIR))
     parser.add_argument("--valid-days", type=int, default=1,
                         help="validate on the last N operating dates")
+    parser.add_argument("--exclude", default="",
+                        help="comma-separated features to drop, for ablation runs "
+                             "on identical data (horizon_sec cannot be dropped)")
     args = parser.parse_args(argv)
+
+    if args.exclude:
+        dropped = {f.strip() for f in args.exclude.split(",") if f.strip()}
+        if "horizon_sec" in dropped:
+            print("horizon_sec is needed for bucketing and cannot be excluded")
+            return 1
+        NUMERIC[:] = [f for f in NUMERIC if f not in dropped]
+        CATEGORICAL[:] = [f for f in CATEGORICAL if f not in dropped]
+        FEATURES[:] = NUMERIC + CATEGORICAL
+        print(f"ablation: excluded {', '.join(sorted(dropped))}")
 
     rows = load_rows(args.dataset)
     if len(rows) < 1000:

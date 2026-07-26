@@ -92,6 +92,21 @@ Raw gzipped XML responses are also archived under `data/raw/` so the parsed sche
 4. Uncertainty: quantile regression for calibrated arrival intervals, which the official feed does not offer at all
 5. Evaluation: time-based split, MAE per prediction horizon, beat-rate vs. Entur, calibration plots, ablation study per feature group
 
+## Ablations
+
+Feature groups are added one at a time and measured on identical data before they are allowed to stay. Numbers are validation MAE in seconds on a day split: trained on 2026-07-25, validated on 2026-07-26 (a Sunday morning, 87 309 rows). Two operating dates is far too little data for firm conclusions; this table exists to keep the method honest from day one.
+
+| Horizon | n | Entur | base model | with segment slack |
+|---|---|---|---|---|
+| 0-5 min | 21 793 | 30.7 | 38.7 | 32.0 |
+| 5-10 min | 19 382 | 46.6 | 50.1 | 45.2 |
+| 10-20 min | 26 996 | 62.9 | 68.9 | 67.7 |
+| 20-45 min | 19 138 | 77.4 | 74.8 | 80.2 |
+
+Segment slack is two features. The first is the scheduled remaining runtime: the aimed time at the target stop minus the aimed time at the vehicle's current stop. The second subtracts the typical observed runtime over the same path, where "typical" is a running mean over runtimes observed strictly before prediction time, so the feature obeys the same no-lookahead rule as everything else.
+
+The group stays: weighted MAE drops from 58.5 to 56.5 seconds, and the model beats Entur on the 5-10 minute horizon for the first time. It also regresses the 20-45 minute bucket. A plausible explanation is that summing running means over many segments amplifies noise when the history is a single day; this gets re-examined as the archive grows.
+
 ## Roadmap
 
 - [x] Collector: SIRI-ET delta polling, mode filtering, weather and deviation snapshots
