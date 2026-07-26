@@ -26,6 +26,10 @@ OUT_PATH = DATA_DIR / "dataset.db"
 # operational situation, wide enough to usually contain several passes.
 RECENT_WINDOW = timedelta(minutes=30)
 
+# A segment's typical runtime only counts once it has this many observations;
+# a path sum over one-off runtimes is noise, not history.
+SLACK_MIN_OBS = 3
+
 # The replay reads the same 18 columns in the same order regardless of where
 # the rows live (hot SQLite, compacted Parquet, or both).
 CALL_COLS = (
@@ -242,7 +246,7 @@ class HistoryIndex:
             return None
         times, sums = entry
         idx = bisect_right(times, at_time)
-        if idx == 0:
+        if idx < SLACK_MIN_OBS:
             return None
         return sums[idx] / idx
 

@@ -187,20 +187,39 @@ class DatasetBuildTest(unittest.TestCase):
 
 
 def seed_second_journey(path):
-    """A later journey over the same 1->2 segment, polled after the first
-    journey's actual runtime became known. Gives the slack feature history."""
+    """Later traffic over the same 1->2 segment, then a journey to predict.
+
+    Journeys testB and testC drive the segment fully recorded (runtimes 300s
+    and 360s), so together with test1's 330s the segment reaches the
+    three-observation minimum: typical runtime mean(330, 300, 360) = 330s.
+    Journey test2 is then polled at 10:10Z with stop 2 still ahead."""
     conn = db.connect(path)
-    base = dict(
-        recorded_at=f"{D}T12:20:00+02:00",
-        line_ref="RUT:Line:12",
-        direction="1",
-        journey_ref="RUT:ServiceJourney:test2",
-        operating_date=D,
-        operator_ref="RUT:Operator:220",
-        monitored=1,
-        cancelled=0,
-        call_cancelled=0,
-    )
+
+    def journey(ref):
+        return dict(
+            recorded_at=f"{D}T12:20:00+02:00",
+            line_ref="RUT:Line:12",
+            direction="1",
+            journey_ref=ref,
+            operating_date=D,
+            operator_ref="RUT:Operator:220",
+            monitored=1,
+            cancelled=0,
+            call_cancelled=0,
+        )
+
+    b = journey("RUT:ServiceJourney:testB")
+    b1 = dict(b, call_type="recorded", stop_ref="NSR:Quay:1", stop_name="A", order_no=1,
+              aimed_dep=f"{D}T12:09:00+02:00", actual_dep=f"{D}T12:10:00+02:00")
+    b2 = dict(b, call_type="recorded", stop_ref="NSR:Quay:2", stop_name="B", order_no=2,
+              aimed_arr=f"{D}T12:14:00+02:00", actual_arr=f"{D}T12:15:00+02:00")
+    c = journey("RUT:ServiceJourney:testC")
+    c1 = dict(c, call_type="recorded", stop_ref="NSR:Quay:1", stop_name="A", order_no=1,
+              aimed_dep=f"{D}T12:11:00+02:00", actual_dep=f"{D}T12:12:00+02:00")
+    c2 = dict(c, call_type="recorded", stop_ref="NSR:Quay:2", stop_name="B", order_no=2,
+              aimed_arr=f"{D}T12:16:00+02:00", actual_arr=f"{D}T12:18:00+02:00")
+
+    base = journey("RUT:ServiceJourney:test2")
     stop1_recorded = dict(
         base, call_type="recorded", stop_ref="NSR:Quay:1", stop_name="A", order_no=1,
         aimed_dep=f"{D}T12:20:00+02:00", actual_dep=f"{D}T12:21:00+02:00",
@@ -214,11 +233,13 @@ def seed_second_journey(path):
         aimed_arr=f"{D}T12:25:00+02:00", actual_arr=f"{D}T12:26:30+02:00",
     )
     for polled_at, calls in (
+        (f"{D}T10:06:00+00:00", [b1, b2]),
+        (f"{D}T10:08:00+00:00", [c1, c2]),
         (f"{D}T10:10:00+00:00", [stop1_recorded, stop2_estimated]),
         (f"{D}T10:12:00+00:00", [stop1_recorded, stop2_recorded]),
     ):
         poll_id = db.insert_poll(conn, polled_at=polled_at, feed="et", dataset="RUT")
-        db.insert_calls(conn, [dict(c, poll_id=poll_id) for c in calls])
+        db.insert_calls(conn, [dict(c_, poll_id=poll_id) for c_ in calls])
     conn.close()
 
 
@@ -243,21 +264,22 @@ class SlackFeatureTest(unittest.TestCase):
             "WHERE journey_ref = 'RUT:ServiceJourney:test2' AND order_no = 2"
         ).fetchone()
         self.assertIsNotNone(row)
-        # Journey 1 drove segment 1->2 in 330s (12:00:00 -> 12:05:30), fully
-        # observed at 10:02Z, before this row's T (10:10Z). Journey 2 has
-        # 300s scheduled for the same segment: slack = 300 - 330 = -30.
+        # Three prior runtimes over segment 1->2 (330, 300, 360) meet the
+        # SLACK_MIN_OBS floor: typical = 330s. test2 has 300s scheduled for
+        # the segment: slack = 300 - 330 = -30.
         self.assertEqual(row[0], 300.0)
         self.assertEqual(row[1], -30.0)
-        # Bunching: journey 1 passed the target stop at 12:05:30 with 150s
-        # delay (vs aimed 12:03), known since 10:02Z. Journey 2 expects to
-        # arrive 12:26:00, so the predicted headway is 1230s.
-        self.assertEqual(row[2], 1230.0)
-        self.assertEqual(row[3], 150.0)
-        # Network state at T=10:10Z: the target stop has one known pass
-        # (delay 150). The line has four known passes across both journeys:
-        # (120 + 150 + 180 + 60) / 4 = 127.5.
-        self.assertEqual(row[4], 150.0)
-        self.assertEqual(row[5], 127.5)
+        # Bunching: the latest known pass of the target stop at T=10:10Z is
+        # testC (observed 10:08Z, actual 12:18, delay 120 vs aimed 12:16).
+        # test2 expects to arrive 12:26:00: predicted headway 480s.
+        self.assertEqual(row[2], 480.0)
+        self.assertEqual(row[3], 120.0)
+        # Network state at T=10:10Z. Target stop passes: 150 (test1),
+        # 60 (testB), 120 (testC) -> mean 110. Line passes: test1's
+        # 120+150+180, testB's 60+60, testC's 60+120, test2's own 60
+        # -> 810 / 8 = 101.25.
+        self.assertEqual(row[4], 110.0)
+        self.assertEqual(row[5], 101.25)
 
 
 if __name__ == "__main__":

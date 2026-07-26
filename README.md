@@ -114,8 +114,9 @@ Later groups, each measured the same way (two arms on one frozen dataset; the va
 | Segment slack | 58.5 | 56.5 | stays |
 | Bunching (headway and delay of the vehicle ahead) | 55.30 | 55.32 | parked: helps 20-45 min, hurts shorter horizons; re-measure with more history |
 | Network state (mean delay last 30 min, per stop and per line) | 54.76 | 54.33 | stays |
+| Slack noise floor (a segment mean needs 3 observations to count) | 54.23 | 53.69 | stays |
 
-After the network group the model is ahead of Entur on weighted validation MAE for the first time: 54.33 against 54.95 seconds, winning the 5-10 and 20-45 minute horizons, 0.1 and 0.8 seconds behind on 0-5 and 10-20. All of this is measured on one Sunday with one Saturday of training data, so treat it as a first honest signal, not a result.
+After these rounds the model is ahead of Entur on weighted validation MAE: 53.69 against 55.01 seconds, winning the 5-10 minute horizon by 3.9 seconds and 20-45 by 3.0, while 0.2 and 0.5 seconds behind on 0-5 and 10-20. The noise-floor round confirmed the earlier hypothesis: the 20-45 regression was one-off runtimes polluting the path sums. All of this is measured on one Sunday with one Saturday of training data, so treat it as a first honest signal, not a result.
 
 ## Roadmap
 
