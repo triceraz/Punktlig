@@ -116,7 +116,11 @@ Later groups, each measured the same way (two arms on one frozen dataset; the va
 | Network state (mean delay last 30 min, per stop and per line) | 54.76 | 54.33 | stays |
 | Slack noise floor (a segment mean needs 3 observations to count) | 54.23 | 53.69 | stays |
 
-After these rounds the model is ahead of Entur on weighted validation MAE: 53.69 against 55.01 seconds, winning the 5-10 minute horizon by 3.9 seconds and 20-45 by 3.0, while 0.2 and 0.5 seconds behind on 0-5 and 10-20. The noise-floor round confirmed the earlier hypothesis: the 20-45 regression was one-off runtimes polluting the path sums. All of this is measured on one Sunday with one Saturday of training data, so treat it as a first honest signal, not a result.
+After these rounds the model is ahead of Entur on weighted validation MAE: 53.69 against 55.01 seconds, winning the 5-10 minute horizon by 3.9 seconds and 20-45 by 3.0, while 0.2 and 0.5 seconds behind on 0-5 and 10-20. The noise-floor round confirmed the earlier hypothesis: the 20-45 regression was one-off runtimes polluting the path sums. Two capacity experiments on the same frozen data (num_leaves 127, learning rate 0.03) were both worse overall and were rejected.
+
+There is also a blending variant (`--with-entur`) that adds Entur's own prediction as a feature, so the model learns to correct the official estimate instead of starting from zero. On the same frozen dataset it beats Entur on every horizon: 27.0 vs 30.7, 40.5 vs 46.7, 61.9 vs 63.5 and 77.0 vs 79.1 seconds, weighted 51.76 vs 55.01. The default model stays independent of Entur's estimate, which is the stronger standalone claim; the blend shows how much value the model adds on top of the production system.
+
+All of this is measured on one Sunday with one Saturday of training data, so treat it as a first honest signal, not a result.
 
 ## Roadmap
 

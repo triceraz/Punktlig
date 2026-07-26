@@ -141,10 +141,16 @@ def main(argv=None):
                              "on identical data (horizon_sec cannot be dropped)")
     parser.add_argument("--include-parked", action="store_true",
                         help="re-measure with the parked features included")
+    parser.add_argument("--with-entur", action="store_true",
+                        help="blending variant: add Entur's own prediction as a "
+                             "feature; the default model stays independent of it")
     args = parser.parse_args(argv)
 
     if args.include_parked:
         NUMERIC.extend(PARKED)
+        FEATURES[:] = NUMERIC + CATEGORICAL
+    if args.with_entur:
+        NUMERIC.append("entur_pred_delay_sec")
         FEATURES[:] = NUMERIC + CATEGORICAL
 
     if args.exclude:
