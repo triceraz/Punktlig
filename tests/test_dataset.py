@@ -152,6 +152,23 @@ class DatasetBuildTest(unittest.TestCase):
         self.assertEqual(self._row(1, 3)["sched_runtime_sec"], 480.0)
         self.assertEqual(self._row(2, 3)["sched_runtime_sec"], 180.0)
 
+    def test_bunching_is_null_without_prior_passes(self):
+        # No other vehicle has passed any target stop at any row's T, so both
+        # bunching features must be NULL for the whole single-journey scenario.
+        for poll_id, order_no in ((1, 2), (1, 3), (2, 3)):
+            self.assertIsNone(self._row(poll_id, order_no)["headway_ahead_sec"])
+            self.assertIsNone(self._row(poll_id, order_no)["delay_ahead_sec"])
+
+    def test_network_state_windowed_means(self):
+        # Known passes: stop 1 at 10:00:30Z (delay 120), stop 2 at 10:02Z
+        # (150), stop 3 at 10:05Z (180). At T=10:00:30 only the first is
+        # known: line mean 120, nothing has passed the target stop yet. At
+        # T=10:02 the line mean is (120+150)/2.
+        self.assertEqual(self._row(1, 2)["line_recent_delay_sec"], 120.0)
+        self.assertIsNone(self._row(1, 2)["stop_recent_delay_sec"])
+        self.assertEqual(self._row(2, 3)["line_recent_delay_sec"], 135.0)
+        self.assertIsNone(self._row(2, 3)["stop_recent_delay_sec"])
+
     def test_slack_is_null_without_prior_observations(self):
         # Segment 1->2 first becomes observable at poll 2 (10:02Z), segment
         # 2->3 at poll 3 (10:05Z). Every row's poll time T predates the
@@ -220,7 +237,9 @@ class SlackFeatureTest(unittest.TestCase):
         conn = db.connect(out)
         self.addCleanup(conn.close)
         row = conn.execute(
-            "SELECT sched_runtime_sec, seg_slack_sec FROM training_row "
+            "SELECT sched_runtime_sec, seg_slack_sec, headway_ahead_sec, delay_ahead_sec, "
+            "stop_recent_delay_sec, line_recent_delay_sec "
+            "FROM training_row "
             "WHERE journey_ref = 'RUT:ServiceJourney:test2' AND order_no = 2"
         ).fetchone()
         self.assertIsNotNone(row)
@@ -229,6 +248,16 @@ class SlackFeatureTest(unittest.TestCase):
         # 300s scheduled for the same segment: slack = 300 - 330 = -30.
         self.assertEqual(row[0], 300.0)
         self.assertEqual(row[1], -30.0)
+        # Bunching: journey 1 passed the target stop at 12:05:30 with 150s
+        # delay (vs aimed 12:03), known since 10:02Z. Journey 2 expects to
+        # arrive 12:26:00, so the predicted headway is 1230s.
+        self.assertEqual(row[2], 1230.0)
+        self.assertEqual(row[3], 150.0)
+        # Network state at T=10:10Z: the target stop has one known pass
+        # (delay 150). The line has four known passes across both journeys:
+        # (120 + 150 + 180 + 60) / 4 = 127.5.
+        self.assertEqual(row[4], 150.0)
+        self.assertEqual(row[5], 127.5)
 
 
 if __name__ == "__main__":

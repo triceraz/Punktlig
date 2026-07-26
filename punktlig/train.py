@@ -31,7 +31,12 @@ NUMERIC = [
     "current_delay_sec", "delay_trend_sec", "n_recorded",
     "fc_air_temp", "fc_precip_mm", "fc_wind_mps",
     "sched_runtime_sec", "seg_slack_sec",
+    "stop_recent_delay_sec", "line_recent_delay_sec",
 ]
+# Measured as a net wash on the 2026-07-26 day split (helps 20-45 min, hurts
+# the shorter horizons). Parked until the archive has enough history for a
+# re-measurement; include with --include-parked.
+PARKED = ["headway_ahead_sec", "delay_ahead_sec"]
 CATEGORICAL = ["line_ref", "direction", "stop_ref"]
 FEATURES = NUMERIC + CATEGORICAL
 
@@ -134,7 +139,13 @@ def main(argv=None):
     parser.add_argument("--exclude", default="",
                         help="comma-separated features to drop, for ablation runs "
                              "on identical data (horizon_sec cannot be dropped)")
+    parser.add_argument("--include-parked", action="store_true",
+                        help="re-measure with the parked features included")
     args = parser.parse_args(argv)
+
+    if args.include_parked:
+        NUMERIC.extend(PARKED)
+        FEATURES[:] = NUMERIC + CATEGORICAL
 
     if args.exclude:
         dropped = {f.strip() for f in args.exclude.split(",") if f.strip()}

@@ -107,6 +107,16 @@ Segment slack is two features. The first is the scheduled remaining runtime: the
 
 The group stays: weighted MAE drops from 58.5 to 56.5 seconds, and the model beats Entur on the 5-10 minute horizon for the first time. It also regresses the 20-45 minute bucket. A plausible explanation is that summing running means over many segments amplifies noise when the history is a single day; this gets re-examined as the archive grows.
 
+Later groups, each measured the same way (two arms on one frozen dataset; the validation day keeps growing between rounds, so weighted numbers are comparable within a round, not across rounds):
+
+| Feature group | Weighted MAE without | with | Verdict |
+|---|---|---|---|
+| Segment slack | 58.5 | 56.5 | stays |
+| Bunching (headway and delay of the vehicle ahead) | 55.30 | 55.32 | parked: helps 20-45 min, hurts shorter horizons; re-measure with more history |
+| Network state (mean delay last 30 min, per stop and per line) | 54.76 | 54.33 | stays |
+
+After the network group the model is ahead of Entur on weighted validation MAE for the first time: 54.33 against 54.95 seconds, winning the 5-10 and 20-45 minute horizons, 0.1 and 0.8 seconds behind on 0-5 and 10-20. All of this is measured on one Sunday with one Saturday of training data, so treat it as a first honest signal, not a result.
+
 ## Roadmap
 
 - [x] Collector: SIRI-ET delta polling, mode filtering, weather and deviation snapshots
