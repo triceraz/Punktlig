@@ -258,7 +258,7 @@ function drawMap(d) {
   // framed on the city's own rail network.
   const FRAME = ["metro", "tram"];
   const on = new Set(modes.filter(m => m !== "rail"));
-  let view = null, hover = null;
+  let view = null, hover = null, zoom = 1, panX = 0, panY = 0;
 
   const chips = document.getElementById("chips");
   modes.forEach(m => {
@@ -293,9 +293,10 @@ function drawMap(d) {
     }
     if (seen < 2) { view = null; return; }
     const s = Math.min(w * .84 / (a1 - a0), h * .84 / (b1 - b0));
-    view = { w, h,
-      x: lon => (mx(lon) - a0) * s + (w - (a1 - a0) * s) / 2,
-      y: lat => h - ((my(lat) - b0) * s + (h - (b1 - b0) * s) / 2) };
+    const ox = (w - (a1 - a0) * s) / 2, oy = (h - (b1 - b0) * s) / 2;
+    view = { w, h, s,
+      x: lon => ((mx(lon) - a0) * s + ox) * zoom + panX,
+      y: lat => (h - ((my(lat) - b0) * s + oy)) * zoom + panY };
   }
 
   function render(t) {
@@ -324,6 +325,25 @@ function drawMap(d) {
       ctx.stroke();
     }
     ctx.globalAlpha = 1;
+
+    // Station markers and a line badge at the end of the route: the two things
+    // every transit map has and a plot of coordinates does not.
+    for (const r of routes) {
+      if (!on.has(r.mode) || r.mode === "bus") continue;
+      ctx.fillStyle = "#05070a"; ctx.strokeStyle = r.colour; ctx.lineWidth = 1.4;
+      for (const p of r.path) {
+        const s = stops[p], x = view.x(s[0]), y = view.y(s[1]);
+        ctx.beginPath(); ctx.arc(x, y, 2.1, 0, 6.284); ctx.fill(); ctx.stroke();
+      }
+      if (r.mode !== "metro") continue;
+      const end = stops[r.path[r.path.length - 1]];
+      const bx = view.x(end[0]), by = view.y(end[1]);
+      ctx.fillStyle = r.colour;
+      ctx.beginPath(); ctx.arc(bx, by, 8.5, 0, 6.284); ctx.fill();
+      ctx.fillStyle = "#05070a"; ctx.font = "600 11px system-ui, sans-serif";
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(r.line, bx, by + .5);
+    }
 
     // A dot with no line under it reads as noise, so vehicles follow the same
     // filter as the routes they run on.
@@ -373,6 +393,29 @@ function drawMap(d) {
         tr.append(el("td", "", p[0]), el("td", "", p[1])); table.append(tr); });
     box.append(table);
   };
+  // Wheel to zoom around the pointer, drag to pan. Every map people call a map
+  // does this, and a fixed frame reads as a picture instead.
+  canvas.addEventListener("wheel", ev => {
+    ev.preventDefault();
+    const r = canvas.getBoundingClientRect();
+    const cx = ev.clientX - r.left, cy = ev.clientY - r.top;
+    const k = Math.exp(-ev.deltaY * .0016);
+    const next = Math.max(1, Math.min(14, zoom * k));
+    const f = next / zoom;
+    panX = cx - (cx - panX) * f; panY = cy - (cy - panY) * f;
+    zoom = next;
+  }, { passive: false });
+
+  let drag = null;
+  canvas.addEventListener("mousedown", ev => { drag = { x: ev.clientX, y: ev.clientY }; });
+  addEventListener("mouseup", () => { drag = null; });
+  addEventListener("mousemove", ev => {
+    if (!drag) return;
+    panX += ev.clientX - drag.x; panY += ev.clientY - drag.y;
+    drag = { x: ev.clientX, y: ev.clientY };
+  });
+  canvas.addEventListener("dblclick", () => { zoom = 1; panX = 0; panY = 0; });
+
   project(); requestAnimationFrame(render);
   addEventListener("resize", project);
 }

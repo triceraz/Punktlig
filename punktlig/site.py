@@ -264,6 +264,40 @@ def score(model_dir):
     }
 
 
+def archive(conn, parquet_dir=PARQUET_DIR):
+    """The size of what has been collected. Part of showing the work."""
+    hot = conn.execute("SELECT COUNT(*) FROM call_snapshot").fetchone()[0]
+    polls, first, last = conn.execute(
+        "SELECT COUNT(*), MIN(polled_at), MAX(polled_at) FROM poll WHERE feed = 'et'"
+    ).fetchone()
+    cold = 0
+    try:
+        import duckdb
+
+        files = _parquet_files(parquet_dir, "calls")
+        if files:
+            con = duckdb.connect()
+            cold = con.execute(
+                f"SELECT COUNT(*) FROM read_parquet({files!r})").fetchone()[0]
+            con.close()
+    except Exception:
+        cold = 0
+    return {
+        "calls": hot + cold,
+        "polls": polls,
+        "since": first,
+        "until": last,
+        "lines": conn.execute("SELECT COUNT(*) FROM line").fetchone()[0],
+        "stops": conn.execute("SELECT COUNT(*) FROM quay").fetchone()[0],
+    }
+
+
+def _parquet_files(parquet_dir, sub):
+    from .dataset import _parquet_files as inner
+
+    return inner(parquet_dir, sub)
+
+
 def build(out=OUT, model_dir=None, db_path=DB_PATH):
     from .predict import MODEL_DIR
 
@@ -281,6 +315,7 @@ def build(out=OUT, model_dir=None, db_path=DB_PATH):
             "network": network(conn, db_path=db_path),
             "vehicles": vehicles(conn, rows),
             "score": score(model_dir),
+            "archive": archive(conn),
         }
     finally:
         conn.close()
