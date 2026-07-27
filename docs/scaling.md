@@ -78,6 +78,29 @@ rule in the replay is that sentence.
 Memory then depends on DuckDB's buffer size, which is configurable, rather
 than on how much history exists.
 
+## What the database version measured
+
+`punktlig/history_sql.py` computes the same three aggregates in DuckDB. On
+the full archive of 26.5 million calls, against the Python index which
+needed 7.6 GB and never finished:
+
+| | Python index | SQL aggregate |
+|---|---|---|
+| Build time | minutes, killed | 15 seconds |
+| Memory | 7.6 GB and climbing | 1.9 GB, under a set limit |
+| Result | none | 546 175 segment buckets, 412 402 stop buckets |
+
+The aggregates are small because bucketing collapses traffic into entities
+times buckets: a million rows in total, not the twenty-six million that
+produced them. This is the part that was worth proving before rewriting the
+replay around it.
+
+Lookups are 30 ms without an index, which is fine for a handful of
+questions and hopeless for fourteen million rows asking three each. The
+replay therefore cannot call it row by row; it has to emit rows first and
+let the database join the history on in bulk. That is the remaining work,
+and it is now a known-good building block rather than a hope.
+
 ## Keeping it honest
 
 The Python replay stays as the reference implementation. The tests that pin
