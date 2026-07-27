@@ -316,5 +316,38 @@ class SlackFeatureTest(unittest.TestCase):
         self.assertEqual(row[5], 101.25)
 
 
+class SampleTest(unittest.TestCase):
+    """Sampling keeps whole journeys, deterministically."""
+
+    def test_no_sample_keeps_everything(self):
+        from punktlig.dataset import _sample_clause
+
+        self.assertEqual(_sample_clause(0), "")
+        self.assertEqual(_sample_clause(16), "")
+
+    def test_sample_selects_by_the_last_character_of_the_journey_ref(self):
+        from punktlig.dataset import _sample_clause
+
+        clause = _sample_clause(4)
+        self.assertIn("substr(c.journey_ref, -1)", clause)
+        for digit in "0123":
+            self.assertIn(f"'{digit}'", clause)
+        for digit in "456789abcdef":
+            self.assertNotIn(f"'{digit}'", clause)
+
+    def test_a_sampled_build_returns_fewer_rows_but_still_builds(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        archive = Path(tmp.name) / "archive.db"
+        seed_archive(archive)
+        # test1 ends in '1', so a one-sixteenth sample of '0' excludes it.
+        written = build(archive_path=archive, out_path=Path(tmp.name) / "s.db",
+                        parquet_dir=Path(tmp.name) / "none", sample=1)
+        self.assertEqual(written, 0)
+        written_all = build(archive_path=archive, out_path=Path(tmp.name) / "a.db",
+                            parquet_dir=Path(tmp.name) / "none", sample=2)
+        self.assertEqual(written_all, 3)
+
+
 if __name__ == "__main__":
     unittest.main()

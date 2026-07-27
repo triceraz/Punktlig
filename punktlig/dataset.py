@@ -341,16 +341,31 @@ SQLITE_CALL_SQL = f"""
            c.cancelled, c.call_cancelled, c.recorded_at
     FROM {{prefix}}call_snapshot c
     JOIN {{prefix}}poll p ON p.poll_id = c.poll_id
-    WHERE c.journey_ref IS NOT NULL AND c.order_no IS NOT NULL
+    WHERE c.journey_ref IS NOT NULL AND c.order_no IS NOT NULL{{sample}}
 """
 
+# Journey references end in a hex character, so keeping the ones that end in
+# a chosen set of digits is a deterministic, journey-atomic sample. Sampling
+# whole journeys rather than rows matters: rows from one journey are near
+# duplicates, and splitting them across the sample boundary would leak.
+SAMPLE_DIGITS = "0123456789abcdef"
 
-def _open_sources(archive_path, parquet_dir):
+
+def _sample_clause(keep):
+    """SQL fragment keeping `keep` sixteenths of all journeys, or nothing."""
+    if not keep or keep >= len(SAMPLE_DIGITS):
+        return ""
+    digits = ", ".join(f"'{d}'" for d in SAMPLE_DIGITS[:keep])
+    return f" AND lower(substr(c.journey_ref, -1)) IN ({digits})"
+
+
+def _open_sources(archive_path, parquet_dir, sample=0):
     """Return (weather_rows, call_rows, close) over hot SQLite plus any compacted Parquet.
 
     The caller must invoke close() after consuming the rows; on Windows an
     open connection blocks deletion of the underlying database file.
     """
+    clause = _sample_clause(sample)
     call_files = _parquet_files(parquet_dir, "calls")
     if not call_files:
         src = db.connect(archive_path)
@@ -358,7 +373,8 @@ def _open_sources(archive_path, parquet_dir):
             f"SELECT {WEATHER_COLS} FROM weather_snapshot ORDER BY polled_at"
         )
         call_rows = src.execute(
-            f"SELECT {CALL_COLS} FROM ({SQLITE_CALL_SQL.format(prefix='')}) {CALL_ORDER}"
+            f"SELECT {CALL_COLS} FROM "
+            f"({SQLITE_CALL_SQL.format(prefix='', sample=clause)}) {CALL_ORDER}"
         )
         return weather_rows, call_rows, src.close
 
@@ -369,14 +385,15 @@ def _open_sources(archive_path, parquet_dir):
     con.execute(f"ATTACH '{archive_path}' AS src (TYPE sqlite, READ_ONLY)")
 
     weather_sql = f"SELECT {WEATHER_COLS} FROM src.weather_snapshot"
-    call_sql = SQLITE_CALL_SQL.format(prefix="src.")
+    call_sql = SQLITE_CALL_SQL.format(prefix="src.", sample=clause)
     weather_files = _parquet_files(parquet_dir, "weather")
     if weather_files:
         weather_sql += f" UNION ALL SELECT {WEATHER_COLS} FROM read_parquet(?)"
     call_sql = (
         f"SELECT {CALL_COLS} FROM ({call_sql}) UNION ALL "
-        f"SELECT {CALL_COLS} FROM read_parquet(?) "
+        f"SELECT {CALL_COLS} FROM read_parquet(?) c "
         "WHERE journey_ref IS NOT NULL AND order_no IS NOT NULL"
+        + clause
     )
     weather_rows = _iter_duck(
         con, weather_sql + " ORDER BY polled_at", [weather_files] if weather_files else None
@@ -385,7 +402,15 @@ def _open_sources(archive_path, parquet_dir):
     return weather_rows, call_rows, con.close
 
 
-def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR):
+def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR, sample=0):
+    """Replay the archive into training rows.
+
+    `sample` keeps that many sixteenths of all journeys. The history indexes
+    are held in memory so every as-of-T lookup is exact, which costs roughly
+    a gigabyte per four million archived calls; sampling is what makes a
+    large archive fit on a small machine. It samples whole journeys, so no
+    journey is split across the boundary.
+    """
     out = db.connect(out_path)
     out.execute("DROP TABLE IF EXISTS training_row")  # rebuilds are idempotent, schema may gain columns
     out.executescript(SCHEMA)
@@ -393,13 +418,13 @@ def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR):
 
     # Pre-pass for the slack and bunching features: the cursors are
     # single-use, so the sources are opened twice, history first, then replay.
-    _, history_rows, close_history = _open_sources(archive_path, parquet_dir)
+    _, history_rows, close_history = _open_sources(archive_path, parquet_dir, sample)
     history = HistoryIndex(history_rows)
     close_history()
 
     situations = SituationIndex(_situation_rows(archive_path))
 
-    weather_rows, cursor, close_sources = _open_sources(archive_path, parquet_dir)
+    weather_rows, cursor, close_sources = _open_sources(archive_path, parquet_dir, sample)
     weather = WeatherIndex(weather_rows)
 
     n_rows = 0
@@ -589,6 +614,16 @@ def iter_rows(cursor, history, weather, situations, require_label=True):
 
 
 if __name__ == "__main__":
-    written = build()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Replay the archive into training rows")
+    parser.add_argument("--sample", type=int, default=0, metavar="N",
+                        help="keep N sixteenths of all journeys (16 or 0 means all). "
+                             "The history indexes live in memory, so a large archive "
+                             "needs this on a small machine")
+    args = parser.parse_args()
+    written = build(sample=args.sample)
+    if args.sample and args.sample < 16:
+        print(f"sampled {args.sample}/16 of journeys")
     print(f"training rows written: {written} -> {OUT_PATH}")
     sys.exit(0)
