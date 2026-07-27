@@ -107,6 +107,11 @@ def connect(path):
     conn = sqlite3.connect(path, timeout=BUSY_TIMEOUT_MS / 1000)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+    # The replay reads every call in chronological order per journey, which
+    # no index can satisfy because the timestamp lives in the poll table. That
+    # sort spilled into RAM and cost gigabytes once the archive passed twenty
+    # million rows, so temporary results go to disk instead.
+    conn.execute("PRAGMA temp_store=FILE")
     conn.executescript(SCHEMA)
     return conn
 
