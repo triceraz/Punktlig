@@ -63,7 +63,8 @@
   /* 3 — map */
   #mapscreen { padding: 0; display: block; }
   #map { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-  #mapscreen .cap { position: absolute; top: 6vh; left: 4vw; max-width: 26rem; text-align: left; z-index: 2; }
+  #mapscreen .cap { position: absolute; top: 6vh; left: 4vw; max-width: 30rem; text-align: left; z-index: 2; }
+  #mapscreen .cap h2 { text-wrap: balance; }
   #mapscreen .cap h2 { margin-bottom: .7rem; }
   #mapscreen .cap p { color: var(--dim); margin: 0; font-size: 1rem; }
   #chips { position: absolute; left: 4vw; bottom: 4vh; display: flex; gap: .5rem;
@@ -249,9 +250,14 @@ function countdown(d) {
 function drawMap(d) {
   const canvas = document.getElementById("map"), ctx = canvas.getContext("2d");
   const stops = d.network.stops, routes = d.network.routes, vehicles = d.vehicles;
-  const modes = [...new Set(routes.map(r => r.mode))];
+  const ORDER = ["metro", "tram", "bus", "water", "rail"];
+  const modes = ORDER.filter(m => routes.some(r => r.mode === m));
   const NAMES = { metro: "T-bane", tram: "Trikk", bus: "Buss", water: "Båt", rail: "Tog" };
-  const on = new Set(modes.filter(m => m !== "bus"));
+  // Trains run to Lillestrøm and beyond; letting them into the frame shrinks
+  // Oslo to a knot in the middle, so they start off and the view is always
+  // framed on the city's own rail network.
+  const FRAME = ["metro", "tram"];
+  const on = new Set(modes.filter(m => m !== "rail"));
   let view = null, hover = null;
 
   const chips = document.getElementById("chips");
@@ -278,7 +284,7 @@ function drawMap(d) {
     // middle of an empty screen, which is exactly how it looked.
     let a0 = 1e9, a1 = -1e9, b0 = 1e9, b1 = -1e9, seen = 0;
     for (const r of routes) {
-      if (!on.has(r.mode)) continue;
+      if (!FRAME.includes(r.mode)) continue;
       for (const p of r.path) {
         const s = stops[p], a = mx(s[0]), b = my(s[1]);
         if (a < a0) a0 = a; if (a > a1) a1 = a; if (b < b0) b0 = b; if (b > b1) b1 = b;
@@ -313,11 +319,11 @@ function drawMap(d) {
     }
     ctx.globalAlpha = 1;
 
-    // Every vehicle is drawn, whatever the line filter says. The lines are the
-    // skeleton and the dots are the life; hiding four fifths of them to keep
-    // the bus routes off the map leaves an empty city.
+    // A dot with no line under it reads as noise, so vehicles follow the same
+    // filter as the routes they run on.
     const pulse = .5 + .5 * Math.sin(t / 850);
     for (const v of vehicles) {
+      if (!on.has(v.mode)) continue;
       const x = view.x(v.lon), y = view.y(v.lat), c = delayColour(v.now);
       if (x < -20 || y < -20 || x > view.w + 20 || y > view.h + 20) continue;
       const r = v === hover ? 6 : 2.9;
@@ -332,6 +338,7 @@ function drawMap(d) {
   function nearest(px, py) {
     let best = null, bd = 400;
     for (const v of vehicles) {
+      if (!on.has(v.mode)) continue;
       const dx = view.x(v.lon) - px, dy = view.y(v.lat) - py, dist = dx * dx + dy * dy;
       if (dist < bd) { bd = dist; best = v; }
     }
