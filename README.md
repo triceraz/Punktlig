@@ -106,6 +106,22 @@ Raw gzipped XML responses are also archived under `data/raw/` so the parsed sche
 4. Uncertainty: quantile regression for calibrated arrival intervals, which the official feed does not offer at all
 5. Evaluation: time-based split, MAE per prediction horizon, beat-rate vs. Entur, calibration plots, ablation study per feature group
 
+## Results
+
+Validation MAE in seconds on a day split: trained on 2026-07-25 and 2026-07-26, validated on 2026-07-27, a Monday including the morning rush. 154 037 validation rows, none of them seen during training or used for feature selection.
+
+| Horizon | n | Timetable | Naive | Entur | Model | Model with Entur as input |
+|---|---|---|---|---|---|---|
+| 0-5 min | 36 598 | 76.3 | 31.9 | 30.7 | 23.4 | 21.8 |
+| 5-10 min | 32 080 | 78.1 | 41.7 | 43.2 | 32.6 | 31.2 |
+| 10-20 min | 46 592 | 81.5 | 52.4 | 55.3 | 43.6 | 42.3 |
+| 20-45 min | 38 767 | 87.6 | 67.9 | 71.4 | 59.0 | 57.6 |
+| Weighted | 154 037 | 81.1 | 49.7 | 51.1 | 40.4 | 38.9 |
+
+The model beats Entur on every horizon, by 21 percent weighted, and the margin holds through rush hour. Two days of training data is still a small archive, and these numbers will move as it grows.
+
+Entur tracks the naive baseline closely and falls behind it beyond five minutes, which is the pattern the project set out to test: the official estimate largely propagates the current delay forward instead of modelling how it evolves.
+
 ## Ablations
 
 Feature groups are added one at a time and measured on identical data before they are allowed to stay. Numbers are validation MAE in seconds on a day split: trained on 2026-07-25, validated on 2026-07-26 (a Sunday morning, 87 309 rows). Two operating dates is far too little data for firm conclusions; this table exists to keep the method honest from day one.
