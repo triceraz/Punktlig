@@ -11,7 +11,7 @@ The no-lookahead rule is enforced structurally:
 """
 
 import sys
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from itertools import groupby
@@ -21,6 +21,14 @@ from . import db
 from .config import DATA_DIR, DB_PATH, PARQUET_DIR
 
 OUT_PATH = DATA_DIR / "dataset.db"
+
+# Window for the network-state features: recent enough to reflect the current
+# operational situation, wide enough to usually contain several passes.
+RECENT_WINDOW = timedelta(minutes=30)
+
+# A segment's typical runtime only counts once it has this many observations;
+# a path sum over one-off runtimes is noise, not history.
+SLACK_MIN_OBS = 3
 
 # The replay reads the same 18 columns in the same order regardless of where
 # the rows live (hot SQLite, compacted Parquet, or both).
@@ -58,6 +66,12 @@ CREATE TABLE IF NOT EXISTS training_row (
   fc_air_temp         REAL,      -- forecast for the expected arrival hour, as known at T
   fc_precip_mm        REAL,
   fc_wind_mps         REAL,
+  sched_runtime_sec   REAL,      -- aimed(target) minus aimed(current stop): scheduled drive time left
+  seg_slack_sec       REAL,      -- sched_runtime minus typical observed runtime for the same path, as known at T
+  headway_ahead_sec   REAL,      -- expected(target) minus when the vehicle ahead passed it, as known at T
+  delay_ahead_sec     REAL,      -- that vehicle's delay when it passed the target stop
+  stop_recent_delay_sec REAL,    -- mean delay at the target stop, any line, last 30 min known at T
+  line_recent_delay_sec REAL,    -- mean delay on the line, any stop, last 30 min known at T
   aimed_ts            TEXT,
   entur_expected_ts   TEXT,
   actual_ts           TEXT,
@@ -106,6 +120,152 @@ class WeatherIndex:
             return None, None, None
         _, temp, precip, wind = candidates[idx]
         return temp, precip, wind
+
+
+class HistoryIndex:
+    """As-of-T history from a pre-pass over the same call cursor the replay uses.
+
+    Two lookups share one scan:
+      - typical(): mean observed runtime per (line, direction, from_stop,
+        to_stop) segment, for the slack feature
+      - last_pass(): the latest known passing of a stop by another vehicle on
+        the same line, for the bunching features
+
+    An observation becomes visible at the poll where its actual times first
+    appeared, and lookups only see observations at or before T, so this
+    history obeys the same no-lookahead rule as the weather join. Typical
+    runtime is the running mean (prefix sums give O(1) as-of-T lookups; a
+    median would cost a sort per lookup at replay scale).
+    """
+
+    def __init__(self, call_rows):
+        first_known = {}  # order -> (from_actual, to_actual, seen_at, stop_ref)
+        raw = defaultdict(list)
+        raw_passes = defaultdict(list)  # (line, dir, stop) -> (seen_at, actual, delay, journey)
+        current_key = None
+
+        def flush(journey_line_dir):
+            for o in sorted(first_known):
+                nxt = first_known.get(o + 1)
+                if nxt is None:
+                    continue
+                from_actual, _, seen_from, stop_from = first_known[o]
+                _, to_actual, seen_to, stop_to = nxt
+                runtime = _secs(to_actual, from_actual)
+                if runtime is not None and runtime > 0:
+                    raw[journey_line_dir + (stop_from, stop_to)].append(
+                        (max(seen_from, seen_to), runtime)
+                    )
+
+        for r in call_rows:
+            if r[16]:  # cancelled journey: its runtimes are not typical
+                continue
+            key = (r[0], r[1])
+            if key != current_key:
+                if current_key is not None:
+                    flush(line_dir)
+                current_key, first_known = key, {}
+            line_dir = (r[4], r[5])
+            if r[6] == "recorded" and r[9] is not None and r[9] not in first_known:
+                from_actual = _ts(r[15]) or _ts(r[12])  # departure, else arrival
+                to_actual = _ts(r[12]) or _ts(r[15])  # arrival, else departure
+                if to_actual or from_actual:
+                    seen_at = _ts(r[3])
+                    first_known[r[9]] = (from_actual, to_actual, seen_at, r[7])
+                    aimed = _ts(r[10]) or _ts(r[13])
+                    delay = _secs(to_actual or from_actual, aimed)
+                    if delay is not None:
+                        raw_passes[(r[4], r[5], r[7])].append(
+                            (seen_at, to_actual or from_actual, delay, r[0])
+                        )
+        if current_key is not None:
+            flush(line_dir)
+
+        # Parallel arrays per segment: observation times for bisect, prefix
+        # sums for O(1) running means.
+        self.segments = {}
+        for seg, obs in raw.items():
+            obs.sort()
+            times = [t for t, _ in obs]
+            sums = [0.0]
+            for _, rt in obs:
+                sums.append(sums[-1] + rt)
+            self.segments[seg] = (times, sums)
+
+        self.passes = {}
+        for key, events in raw_passes.items():
+            events.sort()
+            self.passes[key] = ([e[0] for e in events], events)
+
+        # Delay-level indexes for the network features: per stop across all
+        # lines, and per (line, direction) across all stops. Prefix sums over
+        # events sorted by observation time give O(1) windowed means.
+        by_stop, by_line = defaultdict(list), defaultdict(list)
+        for (line_ref, direction, stop_ref), events in raw_passes.items():
+            by_stop[stop_ref].extend(events)
+            by_line[(line_ref, direction)].extend(events)
+        self.stop_delays = self._prefix(by_stop)
+        self.line_delays = self._prefix(by_line)
+
+    @staticmethod
+    def _prefix(events_by_key):
+        out = {}
+        for key, events in events_by_key.items():
+            events.sort()
+            sums = [0.0]
+            for e in events:
+                sums.append(sums[-1] + e[2])
+            out[key] = ([e[0] for e in events], sums)
+        return out
+
+    @staticmethod
+    def _windowed_mean(entry, at_time, window):
+        if not entry:
+            return None
+        times, sums = entry
+        j = bisect_right(times, at_time)
+        i = bisect_left(times, at_time - window)
+        if j <= i:
+            return None
+        return (sums[j] - sums[i]) / (j - i)
+
+    def stop_recent(self, at_time, stop_ref, window):
+        """Mean delay of passes at the stop, any line, in the window before T."""
+        return self._windowed_mean(self.stop_delays.get(stop_ref), at_time, window)
+
+    def line_recent(self, at_time, line_ref, direction, window):
+        """Mean delay of passes on the line, any stop, in the window before T."""
+        return self._windowed_mean(
+            self.line_delays.get((line_ref, direction)), at_time, window
+        )
+
+    def typical(self, at_time, line_ref, direction, stop_from, stop_to):
+        """Mean observed runtime for the segment, over observations known at T."""
+        entry = self.segments.get((line_ref, direction, stop_from, stop_to))
+        if not entry:
+            return None
+        times, sums = entry
+        idx = bisect_right(times, at_time)
+        if idx < SLACK_MIN_OBS:
+            return None
+        return sums[idx] / idx
+
+    def last_pass(self, at_time, line_ref, direction, stop_ref, exclude_journey):
+        """Latest pass of the stop by another vehicle on the line, known at T.
+
+        Returns (actual_pass_time, delay_at_pass) or (None, None).
+        """
+        entry = self.passes.get((line_ref, direction, stop_ref))
+        if not entry:
+            return None, None
+        times, events = entry
+        idx = bisect_right(times, at_time) - 1
+        while idx >= 0:
+            _, actual, delay, journey_ref = events[idx]
+            if journey_ref != exclude_journey:
+                return actual, delay
+            idx -= 1
+        return None, None
 
 
 def _parquet_files(parquet_dir, sub):
@@ -176,9 +336,15 @@ def _open_sources(archive_path, parquet_dir):
 
 def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR):
     out = db.connect(out_path)
+    out.execute("DROP TABLE IF EXISTS training_row")  # rebuilds are idempotent, schema may gain columns
     out.executescript(SCHEMA)
-    out.execute("DELETE FROM training_row")  # rebuilds are idempotent
     out.commit()
+
+    # Pre-pass for the slack and bunching features: the cursors are
+    # single-use, so the sources are opened twice, history first, then replay.
+    _, history_rows, close_history = _open_sources(archive_path, parquet_dir)
+    history = HistoryIndex(history_rows)
+    close_history()
 
     weather_rows, cursor, close_sources = _open_sources(archive_path, parquet_dir)
     weather = WeatherIndex(weather_rows)
@@ -189,6 +355,8 @@ def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR):
         "poll_id polled_at journey_ref operating_date line_ref direction stop_ref stop_name "
         "order_no dow hour horizon_sec horizon_stops current_order n_recorded "
         "current_delay_sec delay_trend_sec fc_air_temp fc_precip_mm fc_wind_mps "
+        "sched_runtime_sec seg_slack_sec headway_ahead_sec delay_ahead_sec "
+        "stop_recent_delay_sec line_recent_delay_sec "
         "aimed_ts entur_expected_ts actual_ts label_delay_sec entur_pred_delay_sec"
     ).split()
 
@@ -240,6 +408,13 @@ def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR):
             trend_base = [d for o, d in recorded if o <= current_order - 3]
             delay_trend = current_delay - trend_base[-1] if trend_base else None
 
+            order_stop = {r[9]: r[7] for r in poll_rows if r[9] is not None}
+            cur_aimed = None
+            for r in poll_rows:
+                if r[9] == current_order and r[6] == "recorded":
+                    cur_aimed = _ts(r[13]) or _ts(r[10])  # departure, else arrival
+                    break
+
             for r in poll_rows:
                 if r[6] != "estimated" or r[9] <= current_order or r[17]:
                     continue
@@ -255,6 +430,38 @@ def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR):
                 if horizon is None or horizon <= 0:
                     continue
                 temp, precip, wind = weather.lookup(polled_at, expected)
+
+                # Slack: scheduled remaining runtime vs the typical observed
+                # runtime over the same path, using history known at T only.
+                sched_runtime = _secs(aimed, cur_aimed)
+                slack = None
+                if sched_runtime is not None:
+                    typical_sum = 0.0
+                    for o in range(current_order, r[9]):
+                        s_from, s_to = order_stop.get(o), order_stop.get(o + 1)
+                        typ = (
+                            history.typical(polled_at, r[4], r[5], s_from, s_to)
+                            if s_from and s_to else None
+                        )
+                        if typ is None:
+                            typical_sum = None
+                            break
+                        typical_sum += typ
+                    if typical_sum is not None:
+                        slack = sched_runtime - typical_sum
+
+                # Bunching: predicted gap to the vehicle ahead at the target
+                # stop, and how delayed that vehicle was when it passed.
+                ahead_pass, delay_ahead = history.last_pass(
+                    polled_at, r[4], r[5], r[7], journey_ref
+                )
+                headway_ahead = _secs(expected, ahead_pass)
+
+                # Network state: delay level around the target in the last
+                # half hour, at the stop (any line) and on the line (any stop).
+                stop_recent = history.stop_recent(polled_at, r[7], RECENT_WINDOW)
+                line_recent = history.line_recent(polled_at, r[4], r[5], RECENT_WINDOW)
+
                 batch.append(
                     [
                         snap_key[1],
@@ -277,6 +484,12 @@ def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR):
                         temp,
                         precip,
                         wind,
+                        sched_runtime,
+                        slack,
+                        headway_ahead,
+                        delay_ahead,
+                        stop_recent,
+                        line_recent,
                         aimed.isoformat(),
                         expected.isoformat(),
                         actual_ts_val.isoformat(),

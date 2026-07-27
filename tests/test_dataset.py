@@ -143,6 +143,40 @@ class DatasetBuildTest(unittest.TestCase):
         self.assertEqual(row["current_delay_sec"], 150.0)
         self.assertEqual(row["label_delay_sec"], 180.0)  # actual 12:09 vs aimed 12:06
 
+    def test_sched_runtime_from_aimed_times(self):
+        # Scheduled remaining runtime: aimed(target) minus aimed(current stop).
+        # Poll 1, current stop 1 (aimed_dep 11:58): stop 2 aimed 12:03 -> 300s,
+        # stop 3 aimed 12:06 -> 480s. Poll 2, current stop 2 (aimed 12:03):
+        # stop 3 -> 180s.
+        self.assertEqual(self._row(1, 2)["sched_runtime_sec"], 300.0)
+        self.assertEqual(self._row(1, 3)["sched_runtime_sec"], 480.0)
+        self.assertEqual(self._row(2, 3)["sched_runtime_sec"], 180.0)
+
+    def test_bunching_is_null_without_prior_passes(self):
+        # No other vehicle has passed any target stop at any row's T, so both
+        # bunching features must be NULL for the whole single-journey scenario.
+        for poll_id, order_no in ((1, 2), (1, 3), (2, 3)):
+            self.assertIsNone(self._row(poll_id, order_no)["headway_ahead_sec"])
+            self.assertIsNone(self._row(poll_id, order_no)["delay_ahead_sec"])
+
+    def test_network_state_windowed_means(self):
+        # Known passes: stop 1 at 10:00:30Z (delay 120), stop 2 at 10:02Z
+        # (150), stop 3 at 10:05Z (180). At T=10:00:30 only the first is
+        # known: line mean 120, nothing has passed the target stop yet. At
+        # T=10:02 the line mean is (120+150)/2.
+        self.assertEqual(self._row(1, 2)["line_recent_delay_sec"], 120.0)
+        self.assertIsNone(self._row(1, 2)["stop_recent_delay_sec"])
+        self.assertEqual(self._row(2, 3)["line_recent_delay_sec"], 135.0)
+        self.assertIsNone(self._row(2, 3)["stop_recent_delay_sec"])
+
+    def test_slack_is_null_without_prior_observations(self):
+        # Segment 1->2 first becomes observable at poll 2 (10:02Z), segment
+        # 2->3 at poll 3 (10:05Z). Every row's poll time T predates the
+        # observation of the segments it would need, so slack must be NULL:
+        # the as-of-T rule applies to segment history exactly as to weather.
+        for poll_id, order_no in ((1, 2), (1, 3), (2, 3)):
+            self.assertIsNone(self._row(poll_id, order_no)["seg_slack_sec"])
+
     def test_weather_join_never_uses_future_forecasts(self):
         # At poll 1 (10:00:30Z) the newest forecast for the 10Z hour was issued
         # 09:59Z (12.0°). The 99.0° snapshot exists but was issued 10:01Z, in
@@ -150,6 +184,102 @@ class DatasetBuildTest(unittest.TestCase):
         self.assertEqual(self._row(1, 2)["fc_air_temp"], 12.0)
         # At poll 2 (10:02:00Z) the 10:01Z snapshot IS the newest known one.
         self.assertEqual(self._row(2, 3)["fc_air_temp"], 99.0)
+
+
+def seed_second_journey(path):
+    """Later traffic over the same 1->2 segment, then a journey to predict.
+
+    Journeys testB and testC drive the segment fully recorded (runtimes 300s
+    and 360s), so together with test1's 330s the segment reaches the
+    three-observation minimum: typical runtime mean(330, 300, 360) = 330s.
+    Journey test2 is then polled at 10:10Z with stop 2 still ahead."""
+    conn = db.connect(path)
+
+    def journey(ref):
+        return dict(
+            recorded_at=f"{D}T12:20:00+02:00",
+            line_ref="RUT:Line:12",
+            direction="1",
+            journey_ref=ref,
+            operating_date=D,
+            operator_ref="RUT:Operator:220",
+            monitored=1,
+            cancelled=0,
+            call_cancelled=0,
+        )
+
+    b = journey("RUT:ServiceJourney:testB")
+    b1 = dict(b, call_type="recorded", stop_ref="NSR:Quay:1", stop_name="A", order_no=1,
+              aimed_dep=f"{D}T12:09:00+02:00", actual_dep=f"{D}T12:10:00+02:00")
+    b2 = dict(b, call_type="recorded", stop_ref="NSR:Quay:2", stop_name="B", order_no=2,
+              aimed_arr=f"{D}T12:14:00+02:00", actual_arr=f"{D}T12:15:00+02:00")
+    c = journey("RUT:ServiceJourney:testC")
+    c1 = dict(c, call_type="recorded", stop_ref="NSR:Quay:1", stop_name="A", order_no=1,
+              aimed_dep=f"{D}T12:11:00+02:00", actual_dep=f"{D}T12:12:00+02:00")
+    c2 = dict(c, call_type="recorded", stop_ref="NSR:Quay:2", stop_name="B", order_no=2,
+              aimed_arr=f"{D}T12:16:00+02:00", actual_arr=f"{D}T12:18:00+02:00")
+
+    base = journey("RUT:ServiceJourney:test2")
+    stop1_recorded = dict(
+        base, call_type="recorded", stop_ref="NSR:Quay:1", stop_name="A", order_no=1,
+        aimed_dep=f"{D}T12:20:00+02:00", actual_dep=f"{D}T12:21:00+02:00",
+    )
+    stop2_estimated = dict(
+        base, call_type="estimated", stop_ref="NSR:Quay:2", stop_name="B", order_no=2,
+        aimed_arr=f"{D}T12:25:00+02:00", expected_arr=f"{D}T12:26:00+02:00",
+    )
+    stop2_recorded = dict(
+        base, call_type="recorded", stop_ref="NSR:Quay:2", stop_name="B", order_no=2,
+        aimed_arr=f"{D}T12:25:00+02:00", actual_arr=f"{D}T12:26:30+02:00",
+    )
+    for polled_at, calls in (
+        (f"{D}T10:06:00+00:00", [b1, b2]),
+        (f"{D}T10:08:00+00:00", [c1, c2]),
+        (f"{D}T10:10:00+00:00", [stop1_recorded, stop2_estimated]),
+        (f"{D}T10:12:00+00:00", [stop1_recorded, stop2_recorded]),
+    ):
+        poll_id = db.insert_poll(conn, polled_at=polled_at, feed="et", dataset="RUT")
+        db.insert_calls(conn, [dict(c_, poll_id=poll_id) for c_ in calls])
+    conn.close()
+
+
+class SlackFeatureTest(unittest.TestCase):
+    """Slack uses history from OTHER journeys on the same segment, as-of-T."""
+
+    def test_slack_from_prior_journey_runtime(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        archive = Path(tmp.name) / "archive.db"
+        out = Path(tmp.name) / "dataset.db"
+        seed_archive(archive)
+        seed_second_journey(archive)
+        build(archive_path=archive, out_path=out,
+              parquet_dir=Path(tmp.name) / "no-parquet")
+        conn = db.connect(out)
+        self.addCleanup(conn.close)
+        row = conn.execute(
+            "SELECT sched_runtime_sec, seg_slack_sec, headway_ahead_sec, delay_ahead_sec, "
+            "stop_recent_delay_sec, line_recent_delay_sec "
+            "FROM training_row "
+            "WHERE journey_ref = 'RUT:ServiceJourney:test2' AND order_no = 2"
+        ).fetchone()
+        self.assertIsNotNone(row)
+        # Three prior runtimes over segment 1->2 (330, 300, 360) meet the
+        # SLACK_MIN_OBS floor: typical = 330s. test2 has 300s scheduled for
+        # the segment: slack = 300 - 330 = -30.
+        self.assertEqual(row[0], 300.0)
+        self.assertEqual(row[1], -30.0)
+        # Bunching: the latest known pass of the target stop at T=10:10Z is
+        # testC (observed 10:08Z, actual 12:18, delay 120 vs aimed 12:16).
+        # test2 expects to arrive 12:26:00: predicted headway 480s.
+        self.assertEqual(row[2], 480.0)
+        self.assertEqual(row[3], 120.0)
+        # Network state at T=10:10Z. Target stop passes: 150 (test1),
+        # 60 (testB), 120 (testC) -> mean 110. Line passes: test1's
+        # 120+150+180, testB's 60+60, testC's 60+120, test2's own 60
+        # -> 810 / 8 = 101.25.
+        self.assertEqual(row[4], 110.0)
+        self.assertEqual(row[5], 101.25)
 
 
 if __name__ == "__main__":

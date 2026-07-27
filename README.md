@@ -106,6 +106,36 @@ Raw gzipped XML responses are also archived under `data/raw/` so the parsed sche
 4. Uncertainty: quantile regression for calibrated arrival intervals, which the official feed does not offer at all
 5. Evaluation: time-based split, MAE per prediction horizon, beat-rate vs. Entur, calibration plots, ablation study per feature group
 
+## Ablations
+
+Feature groups are added one at a time and measured on identical data before they are allowed to stay. Numbers are validation MAE in seconds on a day split: trained on 2026-07-25, validated on 2026-07-26 (a Sunday morning, 87 309 rows). Two operating dates is far too little data for firm conclusions; this table exists to keep the method honest from day one.
+
+| Horizon | n | Entur | base model | with segment slack |
+|---|---|---|---|---|
+| 0-5 min | 21 793 | 30.7 | 38.7 | 32.0 |
+| 5-10 min | 19 382 | 46.6 | 50.1 | 45.2 |
+| 10-20 min | 26 996 | 62.9 | 68.9 | 67.7 |
+| 20-45 min | 19 138 | 77.4 | 74.8 | 80.2 |
+
+Segment slack is two features. The first is the scheduled remaining runtime: the aimed time at the target stop minus the aimed time at the vehicle's current stop. The second subtracts the typical observed runtime over the same path, where "typical" is a running mean over runtimes observed strictly before prediction time, so the feature obeys the same no-lookahead rule as everything else.
+
+The group stays: weighted MAE drops from 58.5 to 56.5 seconds, and the model beats Entur on the 5-10 minute horizon for the first time. It also regresses the 20-45 minute bucket. A plausible explanation is that summing running means over many segments amplifies noise when the history is a single day; this gets re-examined as the archive grows.
+
+Later groups, each measured the same way (two arms on one frozen dataset; the validation day keeps growing between rounds, so weighted numbers are comparable within a round, not across rounds):
+
+| Feature group | Weighted MAE without | with | Verdict |
+|---|---|---|---|
+| Segment slack | 58.5 | 56.5 | stays |
+| Bunching (headway and delay of the vehicle ahead) | 55.30 | 55.32 | parked: helps 20-45 min, hurts shorter horizons; re-measure with more history |
+| Network state (mean delay last 30 min, per stop and per line) | 54.76 | 54.33 | stays |
+| Slack noise floor (a segment mean needs 3 observations to count) | 54.23 | 53.69 | stays |
+
+After these rounds the model is ahead of Entur on weighted validation MAE: 53.69 against 55.01 seconds, winning the 5-10 minute horizon by 3.9 seconds and 20-45 by 3.0, while 0.2 and 0.5 seconds behind on 0-5 and 10-20. The noise-floor round confirmed the earlier hypothesis: the 20-45 regression was one-off runtimes polluting the path sums. Two capacity experiments on the same frozen data (num_leaves 127, learning rate 0.03) were both worse overall and were rejected.
+
+There is also a blending variant (`--with-entur`) that adds Entur's own prediction as a feature, so the model learns to correct the official estimate instead of starting from zero. On the same frozen dataset it beats Entur on every horizon: 27.0 vs 30.7, 40.5 vs 46.7, 61.9 vs 63.5 and 77.0 vs 79.1 seconds, weighted 51.76 vs 55.01. The default model stays independent of Entur's estimate, which is the stronger standalone claim; the blend shows how much value the model adds on top of the production system.
+
+All of this is measured on one Sunday with one Saturday of training data, so treat it as a first honest signal, not a result.
+
 ## Roadmap
 
 - [x] Collector: SIRI-ET delta polling, mode filtering, weather and deviation snapshots
