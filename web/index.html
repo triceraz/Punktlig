@@ -14,17 +14,18 @@
     --edge: #161c25;
   }
   * { box-sizing: border-box; }
-  html { scroll-snap-type: y proximity; scroll-behavior: smooth; }
+  html { scroll-behavior: smooth; }
   body {
     margin: 0; background: #000; color: var(--ink); overflow-x: hidden;
     font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-    -webkit-font-smoothing: antialiased; line-height: 1.55;
+    -webkit-font-smoothing: antialiased; line-height: 1.6;
   }
+  /* One column, ordinary scrolling. This is a project page, not a slideshow. */
   .screen {
-    min-height: 100vh; scroll-snap-align: start; position: relative;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    padding: 8vh 5vw; text-align: center;
+    position: relative; max-width: 60rem; margin: 0 auto; padding: 5rem 1.5rem;
+    display: block; text-align: left;
   }
+  .screen + .screen { border-top: 1px solid var(--edge); }
   .mono {
     font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
     font-variant-numeric: tabular-nums; letter-spacing: -.045em;
@@ -60,23 +61,42 @@
   h2 { font-size: clamp(1.7rem, 4vw, 3.2rem); margin: 0 0 1.2rem; letter-spacing: -.03em; font-weight: 650; }
   .lede { color: var(--dim); max-width: 54ch; margin: 2.5rem auto 0; font-size: 1.05rem; }
 
-  /* 3 — map */
-  #mapscreen { padding: 0; display: block; }
+  .kicker { font-size: .72rem; letter-spacing: .22em; text-transform: uppercase;
+            color: var(--faint); margin: 0 0 1.2rem; }
+  h1 { font-size: clamp(1.9rem, 4.2vw, 3.1rem); line-height: 1.1; margin: 0;
+       letter-spacing: -.03em; font-weight: 650; max-width: 20ch; }
+  .live { margin-top: 3rem; border: 1px solid var(--edge); border-radius: 14px;
+          padding: 1.6rem 1.8rem; background: #07090d; }
+  .live-head { font-size: .7rem; letter-spacing: .2em; text-transform: uppercase;
+               color: var(--faint); margin-bottom: 1.4rem; }
+  .live-foot { color: var(--dim); font-size: .9rem; margin: 1.4rem 0 0; }
+  .steps { display: grid; gap: 1.1rem; margin-top: 2rem; }
+  .step { border-left: 2px solid var(--edge); padding-left: 1.2rem; color: var(--dim); }
+  .step b { color: var(--ink); font-weight: 600; }
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+           gap: 1.4rem; margin-top: 2.8rem; }
+  .fact .n { font-size: 1.7rem; font-weight: 650; letter-spacing: -.02em; }
+  .fact .l { font-size: .78rem; color: var(--faint); margin-top: .2rem; }
+
+  /* the map: full width, its own band */
+  #mapscreen { position: relative; height: 78vh; min-height: 30rem; padding: 0;
+               border-top: 1px solid var(--edge); border-bottom: 1px solid var(--edge); }
   #map { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-  #mapscreen .cap { position: absolute; top: 6vh; left: 4vw; max-width: 30rem; text-align: left; z-index: 2; }
+  #mapscreen .cap { position: absolute; top: 2.5rem; left: 2.5rem; max-width: 26rem;
+                    text-align: left; z-index: 2; }
   #mapscreen .cap h2 { text-wrap: balance; }
   #mapscreen .cap h2 { margin-bottom: .7rem; }
   #mapscreen .cap p { color: var(--dim); margin: 0; font-size: 1rem; }
-  #chips { position: absolute; left: 4vw; bottom: 4vh; display: flex; gap: .5rem;
+  #chips { position: absolute; left: 2.5rem; bottom: 2rem; display: flex; gap: .5rem;
            flex-wrap: wrap; z-index: 2; }
   .chip { border: 1px solid var(--edge); background: rgba(10,13,18,.8); color: var(--dim);
           border-radius: 999px; padding: .35rem .85rem; font-size: .8rem; cursor: pointer;
           backdrop-filter: blur(10px); }
   .chip.on { color: #000; background: var(--ink); border-color: var(--ink); font-weight: 600; }
-  #scale { position: absolute; right: 4vw; bottom: 4vh; z-index: 2; display: flex;
+  #scale { position: absolute; right: 2.5rem; bottom: 2rem; z-index: 2; display: flex;
            align-items: center; gap: .45rem; font-size: .75rem; color: var(--faint); }
   .sw { width: .8rem; height: .8rem; border-radius: 50%; }
-  #vinfo { position: absolute; right: 4vw; top: 6vh; width: min(19rem, 82vw); z-index: 2;
+  #vinfo { position: absolute; right: 2.5rem; top: 2.5rem; width: min(19rem, 82vw); z-index: 2;
            background: rgba(8,11,16,.9); border: 1px solid var(--edge); border-radius: 14px;
            padding: 1rem 1.15rem; backdrop-filter: blur(14px); text-align: left; display: none; }
   #vinfo.on { display: block; }
@@ -118,34 +138,50 @@
 <body>
 
 <section class="screen">
-  <div class="mono" id="clock">—</div>
-  <p id="ctx"><span id="ctx-line">henter en avgang som skjer akkurat nå</span>
-    <span class="src" id="ctx-src">slik den offisielle appen viser det</span></p>
-  <div id="verdict">Vogna er fortsatt ikke der.</div>
-  <div class="cue">rull ned</div>
+  <p class="kicker">Punktlig · Oslo og Akershus</p>
+  <h1>Kan en modell gjette bedre enn den offisielle sanntidsprognosen?</h1>
+  <p class="lede" style="margin:1.2rem 0 0">
+    Entur publiserer forventet ankomsttid for all kollektivtrafikk i Norge. Prognosen er i
+    praksis en fremskriving: forsinkelsen en vogn har nå antas å gjelde ved hvert stopp
+    videre. Punktlig arkiverer både prognosen og fasiten, hvert minutt, og trener en modell
+    på arkivet. Under står hva det ble til.
+  </p>
+
+  <div class="live">
+    <div class="live-head">Akkurat nå, samme vogn, samme stopp</div>
+    <div class="duo">
+      <div class="side them"><div class="who">Ruter-appen</div><div class="t mono" id="t-them">—</div></div>
+      <div class="gap">uenige om<b id="t-gap">—</b></div>
+      <div class="side us"><div class="who">Punktlig</div><div class="t mono" id="t-us">—</div></div>
+    </div>
+    <p class="live-foot"><span id="ctx-line">henter en avgang</span>.
+      Om noen minutter passerer den, og fasiten havner rett i arkivet.
+      <span id="ctx-src"></span></p>
+  </div>
+  <div class="mono" id="clock" hidden></div>
+  <div id="verdict" hidden></div>
 </section>
 
 <section class="screen">
-  <h2>Vi tror noe annet.</h2>
-  <div class="duo">
-    <div class="side them"><div class="who">Ruter-appen</div><div class="t mono" id="t-them">—</div></div>
-    <div class="gap">uenige om<b id="t-gap">—</b></div>
-    <div class="side us"><div class="who">Punktlig</div><div class="t mono" id="t-us">—</div></div>
-  </div>
-  <p class="lede">
-    Samme vogn, samme stopp, akkurat nå. Om noen minutter passerer den, og fasiten
-    havner rett i arkivet vårt. Det er slik alle tallene lenger nede er målt: mot det
-    som faktisk skjedde, aldri mot en gjetning.
+  <h2>Resultatet</h2>
+  <p class="lede" style="margin:0 0 2.5rem">
+    Målt på en hel dag modellen aldri har trent på, over hele nettet.
+    Tallet er hvor mange sekunder hver prognose bommer med i snitt.
   </p>
-  <div class="cue">rull ned</div>
+  <div class="duel2">
+    <div><div class="who2">Entur bommer med</div><div class="big them mono" id="s-them">0</div></div>
+    <div><div class="who2">Punktlig bommer med</div><div class="big us mono" id="s-us">0</div></div>
+  </div>
+  <p class="punch" id="punch"></p>
+  <table class="data" id="table" style="margin-top:3rem"></table>
 </section>
 
-<section class="screen" id="mapscreen">
+<section id="mapscreen">
   <canvas id="map"></canvas>
   <div class="cap">
-    <h2>Hele Oslo, akkurat nå</h2>
-    <p>Hver prikk er en vogn i bevegelse, farget etter hvor forsinket den er.
-       Linjene ligger der de faktisk går. Klikk på en prikk.</p>
+    <h2>Nettet akkurat nå</h2>
+    <p>Hver prikk er en vogn i bevegelse, farget etter forsinkelse. Linjene ligger
+       der de faktisk går, tegnet av arkivet vårt. Klikk på en prikk, rull for å zoome.</p>
   </div>
   <div id="vinfo"></div>
   <div id="chips"></div>
@@ -159,21 +195,26 @@
 </section>
 
 <section class="screen">
-  <div class="duel2">
-    <div><div class="who2">Entur bommer med</div><div class="big them mono" id="s-them">0</div></div>
-    <div><div class="who2">Punktlig bommer med</div><div class="big us mono" id="s-us">0</div></div>
+  <h2>Slik er det bygget</h2>
+  <div class="steps">
+    <div class="step"><b>Innsamleren</b> poller Enturs sanntidsfeed hvert minutt, døgnet
+      rundt, og lagrer hvert eneste øyeblikksbilde. Både prognosen for stopp som ligger
+      foran, og fasiten når vogna har passert.</div>
+    <div class="step"><b>Arkivet</b> er det som gjør prosjektet mulig. Entur publiserer
+      ikke historiske prognoser, så det som systemet trodde klokka 08:00 om en ankomst
+      08:25 finnes bare i det øyeblikket, med mindre noen tar vare på det.</div>
+    <div class="step"><b>Avspilleren</b> bygger treningsrader ved å spille arkivet om
+      igjen. Modellen får bare se det som var publisert på spørretidspunktet, håndhevet
+      i tre lag, så den aldri kan lære av fremtiden.</div>
+    <div class="step"><b>Modellen</b> er gradient boosted trees som predikerer forsinkelse
+      per stopp og horisont, og måles mot Enturs egen prognose på en dag den aldri
+      har trent på.</div>
   </div>
-  <p class="punch" id="punch"></p>
-  <div class="cue">tallene bak</div>
+  <div class="facts" id="facts"></div>
 </section>
 
 <section class="screen">
-  <h2>Regnskapet</h2>
-  <p class="lede" style="margin-top:0">
-    Gjennomsnittlig bom i sekunder per horisont, målt på en hel dag modellen aldri
-    har trent på. Lavere er bedre.
-  </p>
-  <table class="data" id="table" style="margin-top:2.5rem"></table>
+  <h2>Forbehold</h2>
   <div class="caveat" id="caveat"></div>
 </section>
 
@@ -205,13 +246,10 @@ function delayColour(sec) {
 // a cache: a stale copy shows yesterday's vehicles as if they were running.
 fetch("data.json?t=" + Date.now(), { cache: "no-store" })
   .then(r => r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status)))
-  .then(d => { countdown(d); drawMap(d); score(d); })
+  .then(d => { countdown(d); drawMap(d); score(d); facts(d); })
   .catch(err => {
-    document.getElementById("clock").textContent = "—";
-    document.getElementById("clock").style.fontSize = "3rem";
     document.getElementById("ctx-line").textContent =
-      "fikk ikke tak i sanntidsdataene akkurat nå";
-    document.getElementById("ctx-src").textContent = String(err.message || err);
+      "fikk ikke tak i sanntidsdataene akkurat nå (" + (err.message || err) + ")";
   });
 
 /* ---------- 1 and 2: the clocks ---------- */
@@ -230,20 +268,30 @@ function countdown(d) {
   document.getElementById("t-gap").textContent =
     Math.round(Math.abs(pick.entur - pick.model)) + " sekunder";
 
-  const clock = document.getElementById("clock");
-  const verdict = document.getElementById("verdict");
   const src = document.getElementById("ctx-src");
   (function tick() {
     const gone = (Date.now() - t0) / 1000, left = enturSec - gone;
-    clock.textContent = clockText(Math.round(left));
     document.getElementById("t-them").textContent = clockText(Math.round(left));
     document.getElementById("t-us").textContent = clockText(Math.round(modelSec - gone));
-    if (left <= 0) {
-      clock.classList.add("late"); verdict.classList.add("on");
-      src.textContent = "appen sa at den skulle vært her";
-    }
+    if (left <= 0) src.textContent = "Appen sa at den skulle vært her.";
     requestAnimationFrame(tick);
   })();
+}
+
+function facts(d) {
+  const a = d.archive;
+  if (!a) return;
+  const days = a.since && a.until
+    ? Math.max(1, Math.round((new Date(a.until) - new Date(a.since)) / 864e5)) : null;
+  const box = document.getElementById("facts");
+  [[fmt(a.calls), "arkiverte observasjoner"],
+   [fmt(a.polls), "innsamlinger"],
+   [fmt(a.stops), "holdeplasser"],
+   [fmt(a.lines), "linjer"]].forEach(f => {
+    const n = el("div", "fact");
+    n.append(el("div", "n", f[0]), el("div", "l", f[1]));
+    box.append(n);
+  });
 }
 
 /* ---------- 3: the map ---------- */

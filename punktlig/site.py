@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import db
-from .config import DB_PATH
+from .config import DB_PATH, PARQUET_DIR
 from .predict import predict, upcoming_rows
 
 OUT = Path(__file__).resolve().parent.parent / "web" / "data.json"
