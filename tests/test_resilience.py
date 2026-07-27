@@ -96,6 +96,55 @@ class HttpDeadlineTest(unittest.TestCase):
                 net.get("https://example.invalid/feed", deadline=60)
 
 
+class RateLimitTest(unittest.TestCase):
+    """Polling several codespaces in a row runs into the feed's rate limit."""
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self, size=None):
+            return b""
+
+    def test_a_429_is_retried_after_waiting(self):
+        import urllib.error
+
+        calls = {"n": 0}
+        slept = []
+
+        def flaky(req, timeout=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise urllib.error.HTTPError(
+                    "url", 429, "Too Many Requests", {"Retry-After": "2"}, None
+                )
+            return self._Resp()
+
+        with mock.patch.object(net.urllib.request, "urlopen", flaky), \
+             mock.patch.object(net.time, "sleep", slept.append):
+            net.get("https://example.invalid/feed")
+
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(slept, [2.0])
+
+    def test_other_errors_are_not_retried(self):
+        import urllib.error
+
+        calls = {"n": 0}
+
+        def always_500(req, timeout=None):
+            calls["n"] += 1
+            raise urllib.error.HTTPError("url", 500, "Server Error", {}, None)
+
+        with mock.patch.object(net.urllib.request, "urlopen", always_500):
+            with self.assertRaises(urllib.error.HTTPError):
+                net.get("https://example.invalid/feed")
+        self.assertEqual(calls["n"], 1)
+
+
 class VacuumTest(unittest.TestCase):
     """Compaction must never fail, or block, on a busy database."""
 

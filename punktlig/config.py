@@ -13,9 +13,24 @@ CLIENT_NAME = os.environ.get("PUNKTLIG_CLIENT_NAME", "punktlig-collector")
 
 # Which codespace/operator to collect, and which transport modes to keep.
 # Start small (Oslo tram + metro); widen to more modes/operators by config only.
-DATASET = os.environ.get("PUNKTLIG_DATASET", "RUT")
-AUTHORITY = os.environ.get("PUNKTLIG_AUTHORITY", "RUT:Authority:RUT")
+# Several codespaces can be polled in one cycle, each with its own delta
+# stream. Trains live under NSB rather than the local authority, so covering
+# a region's rail means naming both.
+DATASETS = [d.strip() for d in os.environ.get("PUNKTLIG_DATASET", "RUT").split(",") if d.strip()]
+AUTHORITIES = [
+    a.strip()
+    for a in os.environ.get("PUNKTLIG_AUTHORITY", "RUT:Authority:RUT").split(",")
+    if a.strip()
+]
 MODES = [m.strip() for m in os.environ.get("PUNKTLIG_MODES", "tram,metro").split(",") if m.strip()]
+
+# The first codespace is the one the project is built around and is polled
+# every cycle. The rest share the remaining request budget on a slower
+# cadence, because the feed rate limits a client across all of them.
+SECONDARY_EVERY = int(os.environ.get("PUNKTLIG_SECONDARY_EVERY", "120"))
+
+# Kept for the modules that only ever describe one poll at a time.
+DATASET = DATASETS[0] if DATASETS else ""
 
 # Weather point for feature collection (default: central Oslo).
 WEATHER_LAT = float(os.environ.get("PUNKTLIG_LAT", "59.9139"))

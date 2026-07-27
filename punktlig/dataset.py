@@ -404,15 +404,7 @@ def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR):
 
     n_rows = 0
     batch = []
-    cols = (
-        "poll_id polled_at journey_ref operating_date line_ref direction stop_ref stop_name "
-        "order_no dow hour horizon_sec horizon_stops current_order n_recorded "
-        "current_delay_sec delay_trend_sec fc_air_temp fc_precip_mm fc_wind_mps "
-        "sched_runtime_sec seg_slack_sec headway_ahead_sec delay_ahead_sec "
-        "stop_recent_delay_sec line_recent_delay_sec obs_age_sec since_last_stop_sec "
-        "sx_line_active sx_network_active "
-        "aimed_ts entur_expected_ts actual_ts label_delay_sec entur_pred_delay_sec"
-    ).split()
+    cols = ROW_COLS
 
     def flush():
         nonlocal batch
@@ -424,6 +416,37 @@ def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR):
             out.commit()
             batch = []
 
+    for row in iter_rows(cursor, history, weather, situations):
+        batch.append(row)
+        n_rows += 1
+        if len(batch) >= 5000:
+            flush()
+
+    flush()
+    close_sources()
+    out.close()
+    return n_rows
+
+
+ROW_COLS = (
+    "poll_id polled_at journey_ref operating_date line_ref direction stop_ref stop_name "
+    "order_no dow hour horizon_sec horizon_stops current_order n_recorded "
+    "current_delay_sec delay_trend_sec fc_air_temp fc_precip_mm fc_wind_mps "
+    "sched_runtime_sec seg_slack_sec headway_ahead_sec delay_ahead_sec "
+    "stop_recent_delay_sec line_recent_delay_sec obs_age_sec since_last_stop_sec "
+    "sx_line_active sx_network_active "
+    "aimed_ts entur_expected_ts actual_ts label_delay_sec entur_pred_delay_sec"
+).split()
+
+
+def iter_rows(cursor, history, weather, situations, require_label=True):
+    """Yield one row per (snapshot, future stop), in ROW_COLS order.
+
+    Training and live prediction ask the same question and must therefore
+    build the same features from the same code. The only difference is the
+    label: replaying history requires ground truth from a strictly later
+    snapshot, while predicting now has none by definition.
+    """
     for (journey_ref, operating_date), rows in groupby(cursor, key=lambda r: (r[0], r[1])):
         # A snapshot is keyed by (polled_at, poll_id): chronological first, with
         # poll_id only as a tiebreaker within a single source database.
@@ -487,9 +510,9 @@ def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR):
                 if aimed is None or expected is None:
                     continue
                 label = truth.get(r[9])
-                if not label or label[1] <= snap_key:
+                if require_label and (not label or label[1] <= snap_key):
                     continue  # no ground truth yet, or truth not strictly later than T
-                actual_ts_val = label[0]
+                actual_ts_val = label[0] if label and label[1] > snap_key else None
                 horizon = _secs(expected, polled_at)
                 if horizon is None or horizon <= 0:
                     continue
@@ -526,8 +549,7 @@ def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR):
                 stop_recent = history.stop_recent(polled_at, r[7], RECENT_WINDOW)
                 line_recent = history.line_recent(polled_at, r[4], r[5], RECENT_WINDOW)
 
-                batch.append(
-                    [
+                yield [
                         snap_key[1],
                         polled_at.isoformat(),
                         journey_ref,
@@ -560,19 +582,10 @@ def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR):
                         sx_network,
                         aimed.isoformat(),
                         expected.isoformat(),
-                        actual_ts_val.isoformat(),
+                        actual_ts_val.isoformat() if actual_ts_val else None,
                         _secs(actual_ts_val, aimed),
                         _secs(expected, aimed),
-                    ]
-                )
-                n_rows += 1
-                if len(batch) >= 5000:
-                    flush()
-
-    flush()
-    close_sources()
-    out.close()
-    return n_rows
+                ]
 
 
 if __name__ == "__main__":

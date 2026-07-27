@@ -7,7 +7,7 @@ mode filter (tram/metro/...) is resolved through this lookup table instead.
 from datetime import datetime, timezone
 
 from . import net
-from .config import AUTHORITY, GRAPHQL_URL
+from .config import AUTHORITIES, GRAPHQL_URL
 
 QUERY = """
 query Lines($authorities: [String]) {
@@ -21,8 +21,12 @@ query Lines($authorities: [String]) {
 """
 
 
-def refresh_lines(conn):
-    data = net.post_json(GRAPHQL_URL, {"query": QUERY, "variables": {"authorities": [AUTHORITY]}})
+def refresh_lines(conn, authorities=None):
+    """Refresh the line to mode lookup for every configured authority."""
+    data = net.post_json(
+        GRAPHQL_URL,
+        {"query": QUERY, "variables": {"authorities": authorities or AUTHORITIES}},
+    )
     lines = data["data"]["lines"]
     now = datetime.now(timezone.utc).isoformat()
     conn.executemany(

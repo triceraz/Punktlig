@@ -78,8 +78,9 @@ Everything is configured through environment variables:
 | Variable | Default | Purpose |
 |---|---|---|
 | `PUNKTLIG_CLIENT_NAME` | `punktlig-collector` | `ET-Client-Name` header. Set your own; Entur requires an identifying name |
-| `PUNKTLIG_DATASET` | `RUT` | Entur codespace to poll (e.g. `RUT`, `NSB`, or empty for all of Norway) |
-| `PUNKTLIG_AUTHORITY` | `RUT:Authority:RUT` | Authority used to resolve line to transport mode |
+| `PUNKTLIG_DATASET` | `RUT` | Entur codespaces to poll, comma separated. Trains live under their own codespaces (`VYG`, `GOA`, `SJN`, `FLT`) rather than the local authority |
+| `PUNKTLIG_AUTHORITY` | `RUT:Authority:RUT` | Authorities used to resolve line to transport mode, comma separated. Every codespace being polled needs one, or its journeys are dropped as unknown |
+| `PUNKTLIG_SECONDARY_EVERY` | `120` | Seconds between polls of the codespaces after the first. The feed rate limits a client across all of them, so only the primary one runs every cycle |
 | `PUNKTLIG_MODES` | `tram,metro` | Which transport modes to keep (`tram,metro,bus,rail,water`) |
 | `PUNKTLIG_DB` | `data/punktlig.db` | SQLite database path |
 | `PUNKTLIG_LAT` / `PUNKTLIG_LON` | Oslo | Weather forecast point |

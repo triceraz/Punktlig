@@ -34,16 +34,35 @@ def _log(msg):
     print(msg, flush=True)
 
 
+def _parse_name(name):
+    """(stamp, dataset, page) from HHMMSS[_DATASET]_pN.xml.gz.
+
+    Files written before the collector polled several codespaces carry no
+    dataset in the name, so both shapes have to read.
+    """
+    parts = name.split(".")[0].split("_")
+    if len(parts) >= 3:
+        return parts[0], parts[1], parts[2]
+    if len(parts) == 2:
+        return parts[0], None, parts[1]
+    return parts[0], None, "p1"
+
+
 def _poll_groups(day_dir):
-    """Group a day's page files into polls. A new poll starts at page 1."""
+    """Group a day's page files into polls: a new poll starts at page 1,
+    and each codespace is polled separately."""
     files = sorted(day_dir.glob("*.xml.gz"), key=lambda p: p.name)
-    groups = []
+    groups, current = [], None
     for path in files:
-        stamp, _, page = path.name.partition("_")
-        if page.startswith("p1.") or not groups:
-            groups.append((stamp, [path]))
+        stamp, dataset, page = _parse_name(path.name)
+        # A dataset of None is a real value (files written before the
+        # collector polled several codespaces), so emptiness is the test
+        # for "no group yet", not the dataset itself.
+        if page == "p1" or not groups or current != dataset:
+            groups.append((stamp, dataset, [path]))
+            current = dataset
         else:
-            groups[-1][1].append(path)
+            groups[-1][2].append(path)
     return groups
 
 
@@ -66,7 +85,7 @@ def reparse_sx(conn, raw_dir, days, dry_run=False):
         if not day_dir.is_dir():
             continue
         for path in sorted(day_dir.glob("*.xml.gz")):
-            polled_at = _stamp_to_time(day, path.name.split(".")[0])
+            polled_at = _stamp_to_time(day, _parse_name(path.name)[0])
             if any(abs(polled_at - t) <= MATCH_WINDOW for t in known):
                 continue
             situations = siri.parse_sx(gzip.decompress(path.read_bytes()))
@@ -95,10 +114,15 @@ def reparse(db_path=DB_PATH, raw_dir=RAW_DIR, days=None, dataset=DATASET,
                 "the line table is empty, so the mode filter cannot run; "
                 "let the collector refresh lines first"
             )
-        known = sorted(
-            datetime.fromisoformat(row[0])
-            for row in conn.execute("SELECT polled_at FROM poll WHERE feed = 'et'")
-        )
+        # Polls are matched per codespace: each has its own stream, so one
+        # codespace already collected says nothing about another.
+        known = {}
+        for polled_at, poll_dataset in conn.execute(
+            "SELECT polled_at, dataset FROM poll WHERE feed = 'et'"
+        ):
+            known.setdefault(poll_dataset, []).append(datetime.fromisoformat(polled_at))
+        for value in known.values():
+            value.sort()
 
         stats = {"polls": 0, "calls": 0, "skipped": 0, "refused": [], "situations": 0}
         stats["situations"] = reparse_sx(conn, raw_dir, days, dry_run=dry_run)
@@ -111,9 +135,10 @@ def reparse(db_path=DB_PATH, raw_dir=RAW_DIR, days=None, dataset=DATASET,
                 _log(f"{day}: already compacted to parquet, refusing to reparse")
                 continue
 
-            for stamp, paths in _poll_groups(day_dir):
+            for stamp, file_dataset, paths in _poll_groups(day_dir):
                 polled_at = _stamp_to_time(day, stamp)
-                if any(abs(polled_at - t) <= MATCH_WINDOW for t in known):
+                seen = known.get(file_dataset or dataset, [])
+                if any(abs(polled_at - t) <= MATCH_WINDOW for t in seen):
                     stats["skipped"] += 1
                     continue
 
@@ -137,14 +162,14 @@ def reparse(db_path=DB_PATH, raw_dir=RAW_DIR, days=None, dataset=DATASET,
                     conn,
                     polled_at=polled_at.isoformat(),
                     feed="et",
-                    dataset=dataset,
+                    dataset=file_dataset or dataset,
                     pages=len(paths),
                     n_journeys=journeys,
                     n_calls=len(calls),
                     n_dropped=dropped,
                 )
                 db.insert_calls(conn, [dict(c, poll_id=poll_id) for c in calls])
-                known.append(polled_at)
+                known.setdefault(file_dataset or dataset, []).append(polled_at)
                 stats["polls"] += 1
                 stats["calls"] += len(calls)
         return stats

@@ -1,4 +1,4 @@
-"""The collector: poll Entur SIRI-ET for delta updates and archive every snapshot.
+﻿"""The collector: poll Entur SIRI-ET for delta updates and archive every snapshot.
 
 Designed to run two ways with the same code path:
   - locally:      python3 -m punktlig.collect --loop
@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from . import db, net, siri
 from .config import (
     DATASET,
+    DATASETS,
     DB_PATH,
     ET_URL,
     LINES_EVERY,
@@ -25,6 +26,7 @@ from .config import (
     MODES,
     PAGE_SIZE,
     RAW_DIR,
+    SECONDARY_EVERY,
     SX_EVERY,
     SX_URL,
     WEATHER_EVERY,
@@ -37,6 +39,10 @@ from .weather import fetch_weather_rows
 # process gives up so the scheduler can restart it.
 RECONNECT_AFTER = 2
 GIVE_UP_AFTER = 5
+
+# Codespaces are polled back to back, which the feed rate limits. A short
+# gap keeps a normal cycle under the limit; net.get retries if it still hits.
+BETWEEN_DATASETS = 3.0
 
 
 def _now():
@@ -63,23 +69,33 @@ def _due(conn, key, every_seconds):
     return True
 
 
-def poll_et(conn, modes, save_raw=True):
-    """One delta poll against SIRI-ET, following MoreData pagination."""
-    requestor = db.kv_get(conn, "et_requestor")
+def poll_et(conn, modes, save_raw=True, dataset=None):
+    """One delta poll against SIRI-ET for one codespace, following MoreData pagination.
+
+    Each codespace keeps its own requestorId, because the delta stream is
+    per requestor: sharing one across codespaces would make each poll
+    consume the other's updates.
+    """
+    dataset = DATASET if dataset is None else dataset
+    key = f"et_requestor_{dataset}" if dataset != DATASET else "et_requestor"
+    requestor = db.kv_get(conn, key)
     if not requestor:
         requestor = str(uuid.uuid4())
-        db.kv_set(conn, "et_requestor", requestor)
+        db.kv_set(conn, key, requestor)
 
     started = time.monotonic()
     polled_at = _now().isoformat()
     kept_calls, kept_journeys, dropped, pages = [], 0, 0, 0
 
     while True:
-        url = f"{ET_URL}?datasetId={DATASET}&requestorId={requestor}&maxSize={PAGE_SIZE}"
-        raw = net.get(url)
+        url = f"{ET_URL}?datasetId={dataset}&requestorId={requestor}&maxSize={PAGE_SIZE}"
+        # No retry here: the poll loop is the retry. Retrying a rate limited
+        # request inside the same cycle sends more traffic exactly when the
+        # feed asked for less, and the next cycle is a minute away anyway.
+        raw = net.get(url, retries=0)
         pages += 1
         if save_raw:
-            _save_raw("et", raw, suffix=f"_p{pages}")
+            _save_raw("et", raw, suffix=f"_{dataset}_p{pages}")
         journeys, more = siri.parse_et(raw)
 
         for journey in journeys:
@@ -99,7 +115,7 @@ def poll_et(conn, modes, save_raw=True):
         conn,
         polled_at=polled_at,
         feed="et",
-        dataset=DATASET,
+        dataset=dataset,
         pages=pages,
         n_journeys=kept_journeys,
         n_calls=len(kept_calls),
@@ -123,7 +139,34 @@ def poll_once(conn, save_raw=True):
         n = refresh_lines(conn)
         _log(f"lines: refreshed {n} lines")
 
-    stats = poll_et(conn, line_modes(conn), save_raw=save_raw)
+    modes = line_modes(conn)
+    stats = {"journeys": 0, "calls": 0, "dropped": 0, "pages": 0, "ms": 0}
+    failures = []
+    for i, dataset in enumerate(DATASETS):
+        # Only the primary codespace is polled every cycle; the others run
+        # slower so the client stays inside the feed's request budget.
+        if i and not _due(conn, f"et_due_{dataset}", SECONDARY_EVERY):
+            continue
+        if i:
+            time.sleep(BETWEEN_DATASETS)  # stay under the feed's rate limit
+        try:
+            one = poll_et(conn, modes, save_raw=save_raw, dataset=dataset)
+        except Exception as exc:
+            # One codespace being rate limited or down must not cost us the
+            # others: each has its own delta stream and its own next chance.
+            failures.append(f"{dataset}: {exc}")
+            _log(f"et[{dataset}]: ERROR {exc}")
+            continue
+        if len(DATASETS) > 1:
+            _log(
+                f"et[{dataset}]: {one['journeys']} journeys, {one['calls']} calls "
+                f"({one['dropped']} dropped, {one['pages']} page(s), {one['ms']} ms)"
+            )
+        for k in stats:
+            stats[k] += one[k]
+
+    if failures and len(failures) == len(DATASETS):
+        raise RuntimeError("; ".join(failures))  # nothing collected: a real failure
 
     if _due(conn, "weather_polled_at", WEATHER_EVERY):
         try:
@@ -134,14 +177,15 @@ def poll_once(conn, save_raw=True):
             _log(f"weather: ERROR {exc}")
 
     if _due(conn, "sx_polled_at", SX_EVERY):
-        try:
-            raw = net.get(f"{SX_URL}?datasetId={DATASET}")
-            _save_raw("sx", raw)
-            situations = siri.parse_sx(raw)
-            n = db.insert_situations(conn, _now().isoformat(), situations)
-            _log(f"sx: stored {len(situations)} situations ({n} line rows)")
-        except Exception as exc:
-            _log(f"sx: ERROR {exc}")
+        for dataset in DATASETS:
+            try:
+                raw = net.get(f"{SX_URL}?datasetId={dataset}")
+                _save_raw("sx", raw, suffix=f"_{dataset}")
+                situations = siri.parse_sx(raw)
+                n = db.insert_situations(conn, _now().isoformat(), situations)
+                _log(f"sx[{dataset}]: stored {len(situations)} situations ({n} line rows)")
+            except Exception as exc:
+                _log(f"sx[{dataset}]: ERROR {exc}")
 
     return stats
 
@@ -215,3 +259,4 @@ def main(argv=None):
 
 if __name__ == "__main__":
     sys.exit(main())
+
