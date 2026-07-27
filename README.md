@@ -97,6 +97,8 @@ The scope is deliberately small to start (Oslo trams and metro). Widening to bus
 | `line` | Line to transport mode lookup from JourneyPlanner |
 | `kv` | Collector state (SIRI requestorId, secondary feed timers) |
 
+Whether collection is actually working is a question about the archive, not about the process. A scheduled task can report Running while nothing has been written for hours, which is exactly what happened here once. `python3 -m punktlig.health` therefore judges the archive: how long since a poll landed, and whether recent polls carried rows or only errors. It exits non-zero when something is wrong, so a scheduler can run it and leave a trail.
+
 The collector is built to fail loudly rather than quietly: repeated database errors trigger a reconnect and then a non-zero exit, so a scheduler restarts a clean process instead of leaving one that looks healthy but writes nothing. Response bodies are read under a wall-clock deadline, because a socket timeout only bounds a single read and a trickling response can otherwise hang a poll indefinitely.
 
 Raw gzipped XML responses are also archived under `data/raw/` so the parsed schema can be rebuilt or extended later.

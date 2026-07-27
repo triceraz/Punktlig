@@ -1,4 +1,5 @@
 data/
+run-*.cmd
 .venv/
 __pycache__/
 *.pyc
