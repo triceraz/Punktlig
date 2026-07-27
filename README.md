@@ -108,19 +108,32 @@ Raw gzipped XML responses are also archived under `data/raw/` so the parsed sche
 
 ## Results
 
-Validation MAE in seconds on a day split: trained on 2026-07-25 and 2026-07-26, validated on 2026-07-27, a Monday including the morning rush. 154 037 validation rows, none of them seen during training or used for feature selection.
+Validation MAE in seconds on a day split: trained on 2026-07-25 and 2026-07-26, validated on 2026-07-27, a Monday including the morning rush. 167 383 validation rows, none of them seen during training or used for feature selection.
 
 | Horizon | n | Timetable | Naive | Entur | Model | Model with Entur as input |
 |---|---|---|---|---|---|---|
-| 0-5 min | 36 598 | 76.3 | 31.9 | 30.7 | 23.4 | 21.8 |
-| 5-10 min | 32 080 | 78.1 | 41.7 | 43.2 | 32.6 | 31.2 |
-| 10-20 min | 46 592 | 81.5 | 52.4 | 55.3 | 43.6 | 42.3 |
-| 20-45 min | 38 767 | 87.6 | 67.9 | 71.4 | 59.0 | 57.6 |
-| Weighted | 154 037 | 81.1 | 49.7 | 51.1 | 40.4 | 38.9 |
+| 0-5 min | 39 570 | 77.4 | 32.0 | 31.7 | 23.1 | 21.6 |
+| 5-10 min | 34 882 | 79.5 | 42.0 | 44.5 | 32.3 | 31.1 |
+| 10-20 min | 50 671 | 83.3 | 53.0 | 56.8 | 43.6 | 42.5 |
+| 20-45 min | 42 260 | 88.8 | 68.9 | 73.3 | 58.9 | 58.0 |
+| Weighted | 167 383 | 82.3 | 50.3 | 52.5 | 40.3 | 39.1 |
 
-The model beats Entur on every horizon, by 21 percent weighted, and the margin holds through rush hour. Two days of training data is still a small archive, and these numbers will move as it grows.
+The model beats Entur on every horizon, by 23 percent weighted, and the margin holds through rush hour. Two days of training data is still a small archive, and these numbers will move as it grows.
 
 Entur tracks the naive baseline closely and falls behind it beyond five minutes, which is the pattern the project set out to test: the official estimate largely propagates the current delay forward instead of modelling how it evolves.
+
+### Which direction the errors go
+
+Mean absolute error hides the direction of a miss, and the two directions are not equally annoying. Arriving later than announced means the countdown reaches zero with nothing there; arriving earlier means the vehicle may leave before a passenger who trusted the display gets there. Signed error, on the same validation day, with a 30 second tolerance:
+
+| Predictor | Bias | Median | Came early | On time | Came late |
+|---|---|---|---|---|---|
+| Naive | -15.8 | -5.0 | 21.1 % | 45.9 % | 33.0 % |
+| Entur | -4.5 | 0.0 | 26.1 % | 45.4 % | 28.5 % |
+| Model | -16.8 | -5.6 | 15.2 % | 55.1 % | 29.6 % |
+| Model with Entur as input | -13.9 | -3.7 | 16.0 % | 56.4 % | 27.6 % |
+
+Entur is the best calibrated of the four: its median error is exactly zero and its bias is only four seconds. There is no sign of a deliberate lean towards promising a later arrival than expected. Our model is more often on time (55 against 45 percent) but leans optimistic, which is what an L1 objective does on a right-skewed delay distribution: it fits the conditional median, and the long tail of large delays sits above it. Quantile models are the direct lever on this, and they are next.
 
 ## Ablations
 
@@ -145,6 +158,12 @@ Later groups, each measured the same way (two arms on one frozen dataset; the va
 | Bunching (headway and delay of the vehicle ahead) | 55.30 | 55.32 | parked: helps 20-45 min, hurts shorter horizons; re-measure with more history |
 | Network state (mean delay last 30 min, per stop and per line) | 54.76 | 54.33 | stays |
 | Slack noise floor (a segment mean needs 3 observations to count) | 54.23 | 53.69 | stays |
+| Freshness (age of the feed's own report, time since the last stop passed) | 40.81 | 40.25 | stays |
+| Deviation messages (situations in force for the line and the network) | 40.26 | 40.46 | parked: almost no within-day variation yet, collection continues |
+
+The freshness group was added to test a specific hypothesis. The blending variant wins because Entur sees the vehicle between stops and we only see it at stops, so telling the model how stale its picture is should recover part of that edge. It did: on identical data the gap between the independent model and the blend fell from 1.45 to 1.16 seconds, about a fifth of it, while both models improved.
+
+How far that can go was measured directly. A model trained to predict Entur's own prediction from our features alone reproduces it to 15.9 seconds, against a spread of 54.6 seconds in Entur's predictions, so most of what the official system outputs is already computable from what we archive. The part that is not correlates with our remaining error at 0.10, which is about one percent of our error variance: real, but small. That one percent is the whole blending advantage, and it is what the freshness group ate into.
 
 After these rounds the model is ahead of Entur on weighted validation MAE: 53.69 against 55.01 seconds, winning the 5-10 minute horizon by 3.9 seconds and 20-45 by 3.0, while 0.2 and 0.5 seconds behind on 0-5 and 10-20. The noise-floor round confirmed the earlier hypothesis: the 20-45 regression was one-off runtimes polluting the path sums. Two capacity experiments on the same frozen data (num_leaves 127, learning rate 0.03) were both worse overall and were rejected.
 

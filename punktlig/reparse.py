@@ -20,7 +20,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import db, siri
+from . import db, siri  # noqa: F401  (siri used by both feeds)
 from .config import DATASET, DB_PATH, MODES, PARQUET_DIR, RAW_DIR
 from .lines import line_modes
 
@@ -51,12 +51,38 @@ def _stamp_to_time(day, stamp):
     return datetime.strptime(f"{day} {stamp}", "%Y-%m-%d %H%M%S").replace(tzinfo=timezone.utc)
 
 
+def reparse_sx(conn, raw_dir, days, dry_run=False):
+    """Parse raw SX files into the situation table. Same hole-filling rule."""
+    sx_dir = Path(raw_dir) / "sx"
+    if not sx_dir.is_dir():
+        return 0
+    known = sorted(
+        datetime.fromisoformat(row[0])
+        for row in conn.execute("SELECT DISTINCT polled_at FROM situation")
+    )
+    added = 0
+    for day in days:
+        day_dir = sx_dir / day
+        if not day_dir.is_dir():
+            continue
+        for path in sorted(day_dir.glob("*.xml.gz")):
+            polled_at = _stamp_to_time(day, path.name.split(".")[0])
+            if any(abs(polled_at - t) <= MATCH_WINDOW for t in known):
+                continue
+            situations = siri.parse_sx(gzip.decompress(path.read_bytes()))
+            if not dry_run:
+                db.insert_situations(conn, polled_at.isoformat(), situations)
+            known.append(polled_at)
+            added += len(situations)
+    return added
+
+
 def reparse(db_path=DB_PATH, raw_dir=RAW_DIR, days=None, dataset=DATASET,
             parquet_dir=PARQUET_DIR, dry_run=False):
-    """Parse raw ET files back into the archive. Returns a stats dict."""
+    """Parse raw ET and SX files back into the archive. Returns a stats dict."""
     et_dir = Path(raw_dir) / "et"
     if not et_dir.is_dir():
-        return {"polls": 0, "calls": 0, "skipped": 0, "refused": []}
+        return {"polls": 0, "calls": 0, "skipped": 0, "refused": [], "situations": 0}
 
     if days is None:
         days = sorted(d.name for d in et_dir.iterdir() if d.is_dir())
@@ -74,7 +100,8 @@ def reparse(db_path=DB_PATH, raw_dir=RAW_DIR, days=None, dataset=DATASET,
             for row in conn.execute("SELECT polled_at FROM poll WHERE feed = 'et'")
         )
 
-        stats = {"polls": 0, "calls": 0, "skipped": 0, "refused": []}
+        stats = {"polls": 0, "calls": 0, "skipped": 0, "refused": [], "situations": 0}
+        stats["situations"] = reparse_sx(conn, raw_dir, days, dry_run=dry_run)
         for day in days:
             day_dir = et_dir / day
             if not day_dir.is_dir():
@@ -138,8 +165,8 @@ def main(argv=None):
     stats = reparse(days=args.days, dry_run=args.dry_run)
     verb = "would recover" if args.dry_run else "recovered"
     _log(
-        f"{verb} {stats['polls']} polls, {stats['calls']} calls "
-        f"({stats['skipped']} already present)"
+        f"{verb} {stats['polls']} polls, {stats['calls']} calls, "
+        f"{stats['situations']} situations ({stats['skipped']} already present)"
     )
     return 0
 

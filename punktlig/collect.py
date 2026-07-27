@@ -137,7 +137,9 @@ def poll_once(conn, save_raw=True):
         try:
             raw = net.get(f"{SX_URL}?datasetId={DATASET}")
             _save_raw("sx", raw)
-            _log("sx: stored deviation snapshot")
+            situations = siri.parse_sx(raw)
+            n = db.insert_situations(conn, _now().isoformat(), situations)
+            _log(f"sx: stored {len(situations)} situations ({n} line rows)")
         except Exception as exc:
             _log(f"sx: ERROR {exc}")
 

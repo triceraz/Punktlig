@@ -52,6 +52,19 @@ def seed_archive(path, day=D):
         w.setdefault("lon", 10.7)
     db.insert_weather(conn, weather)
 
+    # Deviation feed: one situation known before the polls start, one that
+    # only appears in a snapshot taken after poll 1.
+    db.insert_situations(conn, f"{day}T09:30:00+00:00", [{
+        "situation_number": "RUT:SituationNumber:1", "line_refs": ["RUT:Line:12"],
+        "progress": "open", "severity": "normal", "report_type": "incident",
+        "start_time": f"{day}T06:00:00+00:00", "end_time": f"{day}T22:00:00+00:00",
+    }])
+    db.insert_situations(conn, f"{day}T10:03:00+00:00", [{
+        "situation_number": "RUT:SituationNumber:2", "line_refs": ["RUT:Line:12"],
+        "progress": "open", "severity": "severe", "report_type": "incident",
+        "start_time": f"{day}T10:00:00+00:00", "end_time": None,
+    }])
+
     stop1_recorded = call(
         call_type="recorded", stop_ref="NSR:Quay:1", stop_name="A", order_no=1,
         aimed_dep=f"{day}T11:58:00+02:00", actual_dep=f"{day}T12:00:00+02:00",
@@ -158,6 +171,27 @@ class DatasetBuildTest(unittest.TestCase):
         for poll_id, order_no in ((1, 2), (1, 3), (2, 3)):
             self.assertIsNone(self._row(poll_id, order_no)["headway_ahead_sec"])
             self.assertIsNone(self._row(poll_id, order_no)["delay_ahead_sec"])
+
+    def test_deviation_counts_never_see_the_future(self):
+        # The seeded feed has one situation for line 12 published 09:30Z and
+        # in force all day, plus one published 10:03Z. At poll 1 (10:00:30Z)
+        # only the first can be known; at poll 3 (10:05Z) both are.
+        self.assertEqual(self._row(1, 2)["sx_line_active"], 1)
+        self.assertEqual(self._row(1, 2)["sx_network_active"], 1)
+        self.assertEqual(self._row(2, 3)["sx_line_active"], 1)
+
+    def test_freshness_features(self):
+        # The fixture stamps every journey RecordedAtTime at 12:00:00+02:00,
+        # which is 10:00:00Z, so at poll 1 (10:00:30Z) the feed's picture is
+        # 30s old. The vehicle passed stop 1 at 12:00:00+02:00 too.
+        row = self._row(1, 2)
+        self.assertEqual(row["obs_age_sec"], 30.0)
+        self.assertEqual(row["since_last_stop_sec"], 30.0)
+        # At poll 2 (10:02:00Z) the last stop passed is stop 2, actual
+        # 12:05:30+02:00 = 10:05:30Z, which is in the future relative to the
+        # poll: the feed published the arrival before it happened.
+        self.assertEqual(self._row(2, 3)["obs_age_sec"], 120.0)
+        self.assertEqual(self._row(2, 3)["since_last_stop_sec"], -210.0)
 
     def test_network_state_windowed_means(self):
         # Known passes: stop 1 at 10:00:30Z (delay 120), stop 2 at 10:02Z

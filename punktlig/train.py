@@ -32,11 +32,18 @@ NUMERIC = [
     "fc_air_temp", "fc_precip_mm", "fc_wind_mps",
     "sched_runtime_sec", "seg_slack_sec",
     "stop_recent_delay_sec", "line_recent_delay_sec",
+    "obs_age_sec", "since_last_stop_sec",
 ]
 # Measured as a net wash on the 2026-07-26 day split (helps 20-45 min, hurts
 # the shorter horizons). Parked until the archive has enough history for a
 # re-measurement; include with --include-parked.
-PARKED = ["headway_ahead_sec", "delay_ahead_sec"]
+PARKED = [
+    "headway_ahead_sec", "delay_ahead_sec",
+    # Deviation counts barely move within a day: most open situations are
+    # long-running planned works. Collection continues, because incidents
+    # will vary once the archive spans more than a couple of days.
+    "sx_line_active", "sx_network_active",
+]
 CATEGORICAL = ["line_ref", "direction", "stop_ref"]
 FEATURES = NUMERIC + CATEGORICAL
 

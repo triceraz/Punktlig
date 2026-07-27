@@ -20,6 +20,36 @@ def _flag(el, path):
     return 1 if (_text(el, path) or "").lower() == "true" else 0
 
 
+def parse_sx(xml_bytes):
+    """Return the deviation situations in a SIRI-SX response.
+
+    One dict per PtSituationElement, with the affected line references
+    flattened into a list. Stops are ignored for now: the model works at line
+    level, and a situation without a line reference is network-wide anyway.
+    """
+    root = ET.fromstring(xml_bytes)
+    situations = []
+    for el in root.iter(f"{{{SIRI_NS}}}PtSituationElement"):
+        lines = [
+            ref.text.strip()
+            for ref in el.iter(f"{{{SIRI_NS}}}LineRef")
+            if ref.text and ref.text.strip()
+        ]
+        situations.append(
+            {
+                "situation_number": _text(el, "s:SituationNumber"),
+                "created_at": _text(el, "s:CreationTime"),
+                "progress": _text(el, "s:Progress"),
+                "severity": _text(el, "s:Severity"),
+                "report_type": _text(el, "s:ReportType"),
+                "start_time": _text(el, "s:ValidityPeriod/s:StartTime"),
+                "end_time": _text(el, "s:ValidityPeriod/s:EndTime"),
+                "line_refs": sorted(set(lines)),
+            }
+        )
+    return situations
+
+
 def parse_et(xml_bytes):
     """Return (journeys, more_data). Each journey dict has a 'calls' list."""
     root = ET.fromstring(xml_bytes)

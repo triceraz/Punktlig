@@ -65,6 +65,22 @@ CREATE INDEX IF NOT EXISTS idx_call_journey
 CREATE INDEX IF NOT EXISTS idx_call_poll
   ON call_snapshot (poll_id);
 
+-- One row per (SX snapshot, situation, affected line). A situation with no
+-- line reference is network-wide and stored once with a NULL line_ref.
+CREATE TABLE IF NOT EXISTS situation (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  polled_at        TEXT NOT NULL,
+  situation_number TEXT,
+  line_ref         TEXT,
+  progress         TEXT,
+  severity         TEXT,
+  report_type      TEXT,
+  start_time       TEXT,
+  end_time         TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_situation_polled ON situation (polled_at);
+
 CREATE TABLE IF NOT EXISTS weather_snapshot (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   polled_at     TEXT NOT NULL,
@@ -132,6 +148,31 @@ def insert_calls(conn, rows):
         [[r.get(c) for c in CALL_COLS] for r in rows],
     )
     conn.commit()
+
+
+SITUATION_COLS = (
+    "polled_at situation_number line_ref progress severity report_type "
+    "start_time end_time"
+).split()
+
+
+def insert_situations(conn, polled_at, situations):
+    """Store one snapshot of the deviation feed, one row per affected line."""
+    rows = []
+    for s in situations:
+        for line_ref in s["line_refs"] or [None]:
+            rows.append([
+                polled_at, s["situation_number"], line_ref, s["progress"],
+                s["severity"], s["report_type"], s["start_time"], s["end_time"],
+            ])
+    if not rows:
+        return 0
+    marks = ", ".join("?" for _ in SITUATION_COLS)
+    conn.executemany(
+        f"INSERT INTO situation ({', '.join(SITUATION_COLS)}) VALUES ({marks})", rows
+    )
+    conn.commit()
+    return len(rows)
 
 
 def insert_weather(conn, rows):

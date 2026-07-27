@@ -35,7 +35,8 @@ SLACK_MIN_OBS = 3
 CALL_COLS = (
     "journey_ref, operating_date, poll_id, polled_at, line_ref, direction, "
     "call_type, stop_ref, stop_name, order_no, aimed_arr, expected_arr, "
-    "actual_arr, aimed_dep, expected_dep, actual_dep, cancelled, call_cancelled"
+    "actual_arr, aimed_dep, expected_dep, actual_dep, cancelled, call_cancelled, "
+    "recorded_at"
 )
 # Snapshots are ordered by wall-clock time, not by poll_id: poll_id is only
 # unique within one collector database, and archives from several machines
@@ -72,6 +73,10 @@ CREATE TABLE IF NOT EXISTS training_row (
   delay_ahead_sec     REAL,      -- that vehicle's delay when it passed the target stop
   stop_recent_delay_sec REAL,    -- mean delay at the target stop, any line, last 30 min known at T
   line_recent_delay_sec REAL,    -- mean delay on the line, any stop, last 30 min known at T
+  obs_age_sec         REAL,      -- poll time minus the feed's own RecordedAtTime for the journey
+  since_last_stop_sec REAL,      -- poll time minus when the vehicle actually passed its last stop
+  sx_line_active      INTEGER,   -- deviation messages in force for this line, as known at T
+  sx_network_active   INTEGER,   -- deviation messages in force anywhere, as known at T
   aimed_ts            TEXT,
   entur_expected_ts   TEXT,
   actual_ts           TEXT,
@@ -268,6 +273,52 @@ class HistoryIndex:
         return None, None
 
 
+class SituationIndex:
+    """Deviation messages in force at a given time, as known at that time.
+
+    The feed is polled hourly and republishes every open situation, so the
+    snapshot taken at or before T is the operator's own view of the network
+    at T. Counting inside that snapshot, filtered by validity period, keeps
+    the no-lookahead rule: a disruption published later is invisible.
+    """
+
+    def __init__(self, rows):
+        snapshots = defaultdict(lambda: (defaultdict(list), {}))
+        for polled_at, situation_number, line_ref, start, end in rows:
+            by_line, all_situations = snapshots[_ts(polled_at)]
+            window = (_ts(start), _ts(end))
+            if line_ref:
+                by_line[line_ref].append(window)
+            all_situations[situation_number] = window
+        self.times = sorted(snapshots)
+        self.snapshots = [snapshots[t] for t in self.times]
+
+    @staticmethod
+    def _in_force(window, at_time):
+        start, end = window
+        return (start is None or start <= at_time) and (end is None or end >= at_time)
+
+    def counts(self, at_time, line_ref):
+        idx = bisect_right(self.times, at_time) - 1
+        if idx < 0:
+            return None, None
+        by_line, all_situations = self.snapshots[idx]
+        line = sum(1 for w in by_line.get(line_ref, ()) if self._in_force(w, at_time))
+        network = sum(1 for w in all_situations.values() if self._in_force(w, at_time))
+        return line, network
+
+
+def _situation_rows(archive_path):
+    conn = db.connect(archive_path)
+    try:
+        return conn.execute(
+            "SELECT polled_at, situation_number, line_ref, start_time, end_time "
+            "FROM situation"
+        ).fetchall()
+    finally:
+        conn.close()
+
+
 def _parquet_files(parquet_dir, sub):
     directory = Path(parquet_dir) / sub
     return sorted(str(p) for p in directory.glob("*.parquet")) if directory.is_dir() else []
@@ -287,7 +338,7 @@ SQLITE_CALL_SQL = f"""
            c.line_ref, c.direction, c.call_type, c.stop_ref, c.stop_name,
            c.order_no, c.aimed_arr, c.expected_arr, c.actual_arr,
            c.aimed_dep, c.expected_dep, c.actual_dep,
-           c.cancelled, c.call_cancelled
+           c.cancelled, c.call_cancelled, c.recorded_at
     FROM {{prefix}}call_snapshot c
     JOIN {{prefix}}poll p ON p.poll_id = c.poll_id
     WHERE c.journey_ref IS NOT NULL AND c.order_no IS NOT NULL
@@ -346,6 +397,8 @@ def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR):
     history = HistoryIndex(history_rows)
     close_history()
 
+    situations = SituationIndex(_situation_rows(archive_path))
+
     weather_rows, cursor, close_sources = _open_sources(archive_path, parquet_dir)
     weather = WeatherIndex(weather_rows)
 
@@ -356,7 +409,8 @@ def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR):
         "order_no dow hour horizon_sec horizon_stops current_order n_recorded "
         "current_delay_sec delay_trend_sec fc_air_temp fc_precip_mm fc_wind_mps "
         "sched_runtime_sec seg_slack_sec headway_ahead_sec delay_ahead_sec "
-        "stop_recent_delay_sec line_recent_delay_sec "
+        "stop_recent_delay_sec line_recent_delay_sec obs_age_sec since_last_stop_sec "
+        "sx_line_active sx_network_active "
         "aimed_ts entur_expected_ts actual_ts label_delay_sec entur_pred_delay_sec"
     ).split()
 
@@ -394,6 +448,7 @@ def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR):
                 continue
 
             recorded = []
+            actual_at_order = {}
             for r in poll_rows:
                 if r[6] == "recorded":
                     actual = _ts(r[12]) or _ts(r[15])
@@ -401,12 +456,21 @@ def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR):
                     delay = _secs(actual, aimed)
                     if delay is not None:
                         recorded.append((r[9], delay))
+                        actual_at_order[r[9]] = actual
             if not recorded:
                 continue  # journey not started yet at T; v1 predicts en-route vehicles only
             recorded.sort()
             current_order, current_delay = recorded[-1]
             trend_base = [d for o, d in recorded if o <= current_order - 3]
             delay_trend = current_delay - trend_base[-1] if trend_base else None
+
+            # How stale the picture is: the feed's own report time for this
+            # vehicle, and how long since it actually passed a stop. Between
+            # stops the operator sees live positions and we do not, so these
+            # say how much the current-delay reading should be trusted.
+            obs_age = _secs(polled_at, _ts(poll_rows[0][18]))
+            since_last_stop = _secs(polled_at, actual_at_order.get(current_order))
+            sx_line, sx_network = situations.counts(polled_at, poll_rows[0][4])
 
             order_stop = {r[9]: r[7] for r in poll_rows if r[9] is not None}
             cur_aimed = None
@@ -490,6 +554,10 @@ def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR):
                         delay_ahead,
                         stop_recent,
                         line_recent,
+                        obs_age,
+                        since_last_stop,
+                        sx_line,
+                        sx_network,
                         aimed.isoformat(),
                         expected.isoformat(),
                         actual_ts_val.isoformat(),
