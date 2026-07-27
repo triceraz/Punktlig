@@ -16,6 +16,7 @@ query Lines($authorities: [String]) {
     publicCode
     name
     transportMode
+    presentation { colour }
   }
 }
 """
@@ -30,10 +31,13 @@ def refresh_lines(conn, authorities=None):
     lines = data["data"]["lines"]
     now = datetime.now(timezone.utc).isoformat()
     conn.executemany(
-        "INSERT INTO line (line_ref, mode, public_code, name, fetched_at) VALUES (?, ?, ?, ?, ?) "
-        "ON CONFLICT(line_ref) DO UPDATE SET mode = excluded.mode, public_code = excluded.public_code, "
-        "name = excluded.name, fetched_at = excluded.fetched_at",
-        [(l["id"], l["transportMode"], l.get("publicCode"), l.get("name"), now) for l in lines],
+        "INSERT INTO line (line_ref, mode, public_code, name, colour, fetched_at) "
+        "VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(line_ref) DO UPDATE SET mode = excluded.mode, "
+        "public_code = excluded.public_code, name = excluded.name, "
+        "colour = excluded.colour, fetched_at = excluded.fetched_at",
+        [(l["id"], l["transportMode"], l.get("publicCode"), l.get("name"),
+          (l.get("presentation") or {}).get("colour"), now) for l in lines],
     )
     conn.commit()
     return len(lines)

@@ -3,283 +3,272 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Punktlig — sanntidsprognoser for Oslo, målt mot fasiten</title>
+<title>Punktlig — appen sier «Nå». Vogna er ikke der.</title>
 <style>
   :root {
-    --bg: #05070a;
-    --panel: rgba(13, 17, 24, .88);
-    --line: #1b2431;
-    --ink: #eef2f7;
-    --dim: #8d99ac;
-    --faint: #5b6676;
+    --ink: #f2f5f8;
+    --dim: #7b8698;
+    --faint: #49525f;
     --us: #34d399;
-    --them: #fb7185;
-    --early: #38bdf8;
-    --late1: #fbbf24;
-    --late2: #fb923c;
-    --late3: #ef4444;
+    --them: #ff4d5e;
+    --edge: #161c25;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; }
+  html { scroll-snap-type: y proximity; scroll-behavior: smooth; }
   body {
-    background: var(--bg); color: var(--ink); overflow-x: hidden;
+    margin: 0; background: #000; color: var(--ink); overflow-x: hidden;
     font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
     -webkit-font-smoothing: antialiased; line-height: 1.55;
   }
+  .screen {
+    min-height: 100vh; scroll-snap-align: start; position: relative;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 8vh 5vw; text-align: center;
+  }
+  .mono {
+    font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+    font-variant-numeric: tabular-nums; letter-spacing: -.045em;
+  }
+  .cue {
+    position: absolute; bottom: 3.5vh; left: 50%; font-size: .7rem;
+    letter-spacing: .24em; text-transform: uppercase; color: var(--faint);
+    animation: bob 2.6s ease-in-out infinite;
+  }
+  @keyframes bob { 0%,100% { transform: translate(-50%,0); } 50% { transform: translate(-50%,.4rem); } }
 
-  /* ---------- stage: full-bleed map with the story on top ---------- */
-  #stage { position: relative; height: 100vh; width: 100%; overflow: hidden; }
+  /* 1 — the countdown */
+  #clock { font-weight: 600; line-height: .84; font-size: clamp(4.5rem, 20vw, 18rem);
+           transition: color .6s ease; }
+  #clock.late { color: var(--them); }
+  #ctx { margin-top: 2.2rem; color: var(--dim); font-size: clamp(.95rem, 1.5vw, 1.15rem); }
+  #ctx .src { display: block; margin-top: .55rem; font-size: .72rem; letter-spacing: .22em;
+              text-transform: uppercase; color: var(--faint); }
+  #verdict { margin-top: 1.8rem; font-size: clamp(1.2rem, 3vw, 2.2rem); font-weight: 650;
+             letter-spacing: -.02em; color: var(--them); opacity: 0; transition: opacity .9s ease; }
+  #verdict.on { opacity: 1; }
+
+  /* 2 — two clocks */
+  .duo { display: grid; grid-template-columns: 1fr auto 1fr; gap: clamp(1rem,4vw,4rem);
+         align-items: center; width: 100%; max-width: 74rem; }
+  .side .who { font-size: .72rem; letter-spacing: .22em; text-transform: uppercase;
+               color: var(--faint); margin-bottom: .9rem; }
+  .side .t { font-size: clamp(2.6rem, 8vw, 7rem); font-weight: 600; line-height: .9; }
+  .side.them .t { color: var(--them); } .side.us .t { color: var(--us); }
+  .gap { color: var(--faint); font-size: .72rem; letter-spacing: .18em; text-transform: uppercase; }
+  .gap b { display: block; margin-top: .45rem; font-size: clamp(1.1rem,2.2vw,1.9rem);
+           color: var(--ink); font-weight: 600; letter-spacing: -.02em; }
+  h2 { font-size: clamp(1.7rem, 4vw, 3.2rem); margin: 0 0 1.2rem; letter-spacing: -.03em; font-weight: 650; }
+  .lede { color: var(--dim); max-width: 54ch; margin: 2.5rem auto 0; font-size: 1.05rem; }
+
+  /* 3 — map */
+  #mapscreen { padding: 0; display: block; }
   #map { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-  #stage::after {
-    content: ""; position: absolute; inset: 0; pointer-events: none;
-    background: radial-gradient(120% 90% at 60% 40%, transparent 35%, rgba(5,7,10,.72) 78%);
-  }
+  #mapscreen .cap { position: absolute; top: 6vh; left: 4vw; max-width: 26rem; text-align: left; z-index: 2; }
+  #mapscreen .cap h2 { margin-bottom: .7rem; }
+  #mapscreen .cap p { color: var(--dim); margin: 0; font-size: 1rem; }
+  #chips { position: absolute; left: 4vw; bottom: 4vh; display: flex; gap: .5rem;
+           flex-wrap: wrap; z-index: 2; }
+  .chip { border: 1px solid var(--edge); background: rgba(10,13,18,.8); color: var(--dim);
+          border-radius: 999px; padding: .35rem .85rem; font-size: .8rem; cursor: pointer;
+          backdrop-filter: blur(10px); }
+  .chip.on { color: #000; background: var(--ink); border-color: var(--ink); font-weight: 600; }
+  #scale { position: absolute; right: 4vw; bottom: 4vh; z-index: 2; display: flex;
+           align-items: center; gap: .45rem; font-size: .75rem; color: var(--faint); }
+  .sw { width: .8rem; height: .8rem; border-radius: 50%; }
+  #vinfo { position: absolute; right: 4vw; top: 6vh; width: min(19rem, 82vw); z-index: 2;
+           background: rgba(8,11,16,.9); border: 1px solid var(--edge); border-radius: 14px;
+           padding: 1rem 1.15rem; backdrop-filter: blur(14px); text-align: left; display: none; }
+  #vinfo.on { display: block; }
+  #vinfo .badge { display: inline-block; border-radius: 6px; padding: .1rem .55rem;
+                  font-weight: 700; color: #000; font-size: .95rem; }
+  #vinfo table { width: 100%; border-collapse: collapse; margin-top: .8rem; font-size: .86rem; }
+  #vinfo td { padding: .3rem 0; border-bottom: 1px solid var(--edge); color: var(--dim); }
+  #vinfo td:last-child { text-align: right; color: var(--ink); font-variant-numeric: tabular-nums; }
 
-  .overlay { position: absolute; z-index: 3; pointer-events: none; }
-  .overlay > * { pointer-events: auto; }
+  /* 4 — the score */
+  .duel2 { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(1.5rem,6vw,6rem);
+           width: 100%; max-width: 68rem; }
+  .big { font-size: clamp(3.5rem, 11vw, 9rem); font-weight: 660; letter-spacing: -.04em; line-height: .95; }
+  .big.them { color: var(--them); } .big.us { color: var(--us); }
+  .who2 { font-size: .74rem; letter-spacing: .22em; text-transform: uppercase; color: var(--faint); }
+  .unit { font-size: .35em; letter-spacing: 0; color: var(--faint); font-weight: 500; }
+  .punch { margin-top: 3.5rem; font-size: clamp(1rem,2vw,1.35rem); color: var(--dim); max-width: 60ch; }
+  .punch b { color: var(--ink); }
 
-  #headline { top: 0; left: 0; right: 0; padding: 4.5vh 4vw 0; }
-  .eyebrow {
-    font-size: .72rem; letter-spacing: .22em; text-transform: uppercase;
-    color: var(--faint); margin: 0 0 1rem;
-  }
-  h1 {
-    margin: 0; font-weight: 680; letter-spacing: -.03em;
-    font-size: clamp(2rem, 4.6vw, 4.2rem); line-height: 1.02; max-width: 20ch;
-  }
-  h1 em { font-style: normal; color: var(--us); }
-  .sub { margin: 1.1rem 0 0; color: var(--dim); max-width: 46ch; font-size: 1.02rem; }
-
-  /* ---------- the two countdowns ---------- */
-  #duel {
-    position: absolute; right: 4vw; top: 50%; transform: translateY(-50%);
-    display: grid; gap: .9rem; width: min(23rem, 40vw);
-  }
-  .phone {
-    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
-    padding: 1rem 1.15rem; backdrop-filter: blur(14px);
-  }
-  .phone .who { font-size: .7rem; letter-spacing: .16em; text-transform: uppercase; color: var(--faint); }
-  .phone .big { font-size: 2.6rem; font-weight: 680; letter-spacing: -.03em; line-height: 1.05; margin-top: .2rem; }
-  .phone.them .big { color: var(--them); }
-  .phone.us .big { color: var(--us); }
-  .phone .what { font-size: .88rem; color: var(--dim); margin-top: .1rem; }
-  #verdict {
-    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
-    padding: .9rem 1.15rem; font-size: .9rem; color: var(--dim); backdrop-filter: blur(14px);
-  }
-  #verdict b { color: var(--ink); font-weight: 600; }
-
-  /* ---------- legend + counter ---------- */
-  #legend {
-    left: 4vw; bottom: 3.2vh; display: flex; gap: 1.15rem; align-items: center;
-    flex-wrap: wrap; font-size: .8rem; color: var(--dim);
-  }
-  .key { display: flex; align-items: center; gap: .4rem; }
-  .dot { width: .62rem; height: .62rem; border-radius: 50%; }
-  #counter { font-variant-numeric: tabular-nums; color: var(--faint); }
-  .scroll-hint {
-    right: 4vw; bottom: 3.2vh; font-size: .78rem; color: var(--faint);
-    letter-spacing: .1em; text-transform: uppercase;
-  }
-
-  /* ---------- vehicle detail ---------- */
-  #detail {
-    left: 4vw; bottom: 9vh; width: min(22rem, 80vw); background: var(--panel);
-    border: 1px solid var(--line); border-radius: 14px; padding: 1rem 1.15rem;
-    backdrop-filter: blur(14px); display: none;
-  }
-  #detail.on { display: block; }
-  #detail .line-badge {
-    display: inline-block; background: #1c2534; border-radius: 6px;
-    padding: .1rem .5rem; font-weight: 650; font-size: .95rem;
-  }
-  #detail table { width: 100%; border-collapse: collapse; margin-top: .7rem; font-size: .85rem; }
-  #detail td { padding: .3rem 0; border-bottom: 1px solid var(--line); }
-  #detail td:last-child, #detail td:nth-child(2) { text-align: right; font-variant-numeric: tabular-nums; }
-
-  /* ---------- the page below ---------- */
-  section { padding: 7rem 4vw; border-top: 1px solid var(--line); }
-  .inner { max-width: 84rem; margin: 0 auto; }
-  h2 { font-size: clamp(1.6rem, 2.6vw, 2.4rem); margin: 0 0 .6rem; letter-spacing: -.02em; }
-  .note { color: var(--dim); max-width: 60ch; margin: 0 0 2.5rem; font-size: 1.02rem; }
-
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 1.5rem; }
-  .card { background: #0b0f16; border: 1px solid var(--line); border-radius: 14px; padding: 1.6rem 1.7rem; }
-  .card .k { font-size: .72rem; letter-spacing: .16em; text-transform: uppercase; color: var(--faint); }
-  .card .v { font-size: clamp(2.2rem, 4vw, 3.4rem); font-weight: 680; letter-spacing: -.03em; margin-top: .4rem; }
-  .card .v.us { color: var(--us); } .card .v.them { color: var(--them); }
-  .card .n { color: var(--dim); font-size: .9rem; margin-top: .4rem; }
-
-  .bars { display: grid; gap: 1.1rem; margin-top: 1rem; }
-  .bar-row { display: grid; grid-template-columns: 7rem 1fr; gap: 1.2rem; align-items: center; }
-  .bar-row .label { color: var(--dim); font-size: .9rem; font-variant-numeric: tabular-nums; }
-  .track { display: grid; gap: .35rem; }
-  .bar { height: 1.7rem; border-radius: 5px; display: flex; align-items: center;
-         padding: 0 .7rem; font-size: .8rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .bar.us { background: rgba(52,211,153,.16); border-left: 2px solid var(--us); color: var(--us); }
-  .bar.them { background: rgba(251,113,133,.14); border-left: 2px solid var(--them); color: var(--them); }
-  .bar.naive { background: #131a25; border-left: 2px solid #475569; color: var(--dim); }
-
-  table.data { width: 100%; border-collapse: collapse; font-size: .92rem; margin-top: 1rem; }
-  table.data th, table.data td { text-align: right; padding: .6rem .8rem; border-bottom: 1px solid var(--line); }
+  /* 5 — detail */
+  table.data { width: 100%; border-collapse: collapse; font-size: .9rem; max-width: 60rem; margin: 0 auto; }
+  table.data th, table.data td { text-align: right; padding: .55rem .8rem; border-bottom: 1px solid var(--edge); }
   table.data th:first-child, table.data td:first-child { text-align: left; }
-  table.data th { font-size: .72rem; letter-spacing: .12em; text-transform: uppercase; color: var(--faint); font-weight: 500; }
+  table.data th { font-size: .7rem; letter-spacing: .14em; text-transform: uppercase;
+                  color: var(--faint); font-weight: 500; }
   table.data td { font-variant-numeric: tabular-nums; }
   td.win { color: var(--us); } td.lose { color: var(--them); }
-
-  .caveat { background: #0b0f16; border: 1px solid var(--line); border-left: 2px solid #f59e0b;
-            border-radius: 12px; padding: 1.4rem 1.6rem; color: var(--dim); font-size: .95rem; max-width: 70ch; }
+  .caveat { margin: 3rem auto 0; max-width: 62ch; color: var(--dim); font-size: .95rem;
+            border-left: 2px solid #f59e0b; padding-left: 1.2rem; text-align: left; }
   .caveat b { color: var(--ink); }
-  footer { padding: 3rem 4vw 5rem; color: var(--faint); font-size: .86rem; border-top: 1px solid var(--line); }
+  footer { padding: 3rem 5vw 5rem; color: var(--faint); font-size: .82rem; text-align: center; }
   a { color: #7cc4ff; text-decoration: none; } a:hover { text-decoration: underline; }
-
-  @media (max-width: 820px) {
-    #duel { position: static; transform: none; width: auto; margin: 2rem 4vw 0; }
-    #headline { position: static; padding: 3rem 4vw 0; }
-    #stage { height: auto; min-height: 100vh; }
-    #map { position: absolute; }
-    #detail, #legend, .scroll-hint { position: static; margin: 1.5rem 4vw 0; width: auto; }
+  @media (max-width: 760px) {
+    .duo, .duel2 { grid-template-columns: 1fr; gap: 2.2rem; }
+    #vinfo { position: static; margin: 1rem 4vw; width: auto; }
   }
 </style>
 </head>
 <body>
 
-<div id="stage">
+<section class="screen">
+  <div class="mono" id="clock">—</div>
+  <p id="ctx"><span id="ctx-line">henter en avgang som skjer akkurat nå</span>
+    <span class="src" id="ctx-src">slik den offisielle appen viser det</span></p>
+  <div id="verdict">Vogna er fortsatt ikke der.</div>
+  <div class="cue">rull ned</div>
+</section>
+
+<section class="screen">
+  <h2>Vi tror noe annet.</h2>
+  <div class="duo">
+    <div class="side them"><div class="who">Ruter-appen</div><div class="t mono" id="t-them">—</div></div>
+    <div class="gap">uenige om<b id="t-gap">—</b></div>
+    <div class="side us"><div class="who">Punktlig</div><div class="t mono" id="t-us">—</div></div>
+  </div>
+  <p class="lede">
+    Samme vogn, samme stopp, akkurat nå. Om noen minutter passerer den, og fasiten
+    havner rett i arkivet vårt. Det er slik alle tallene lenger nede er målt: mot det
+    som faktisk skjedde, aldri mot en gjetning.
+  </p>
+  <div class="cue">rull ned</div>
+</section>
+
+<section class="screen" id="mapscreen">
   <canvas id="map"></canvas>
-
-  <div class="overlay" id="headline">
-    <p class="eyebrow">Oslo og Akershus · oppdatert hvert minutt</p>
-    <h1>Appen sier «Nå».<br><em>Vogna er ikke der.</em></h1>
-    <p class="sub">
-      Hver prikk er et kjøretøy som kjører akkurat nå, farget etter hvor forsinket det er.
-      Vi arkiverer både den offisielle prognosen og fasiten, og trener en modell til å
-      gjette bedre. Klikk på en prikk for å se hvem som tror hva.
-    </p>
+  <div class="cap">
+    <h2>Hele Oslo, akkurat nå</h2>
+    <p>Hver prikk er en vogn i bevegelse, farget etter hvor forsinket den er.
+       Linjene ligger der de faktisk går. Klikk på en prikk.</p>
   </div>
-
-  <div class="overlay" id="duel">
-    <div class="phone them">
-      <div class="who">Ruter-appen sier</div>
-      <div class="big" id="duel-them">—</div>
-      <div class="what" id="duel-what">—</div>
-    </div>
-    <div class="phone us">
-      <div class="who">Punktlig sier</div>
-      <div class="big" id="duel-us">—</div>
-      <div class="what" id="duel-line">—</div>
-    </div>
-    <div id="verdict"></div>
-  </div>
-
-  <div class="overlay" id="detail"></div>
-
-  <div class="overlay" id="legend">
-    <span class="key"><i class="dot" style="background:var(--early)"></i> før rutetid</span>
-    <span class="key"><i class="dot" style="background:var(--us)"></i> i rute</span>
-    <span class="key"><i class="dot" style="background:var(--late1)"></i> 1–3 min</span>
-    <span class="key"><i class="dot" style="background:var(--late2)"></i> 3–6 min</span>
-    <span class="key"><i class="dot" style="background:var(--late3)"></i> over 6 min</span>
-    <span id="counter"></span>
-  </div>
-  <div class="overlay scroll-hint">Rull ned for beviset ↓</div>
-</div>
-
-<section>
-  <div class="inner">
-    <h2>Så, hvem gjetter best?</h2>
-    <p class="note">
-      Målt på en hel dag modellen aldri har trent på, over hele nettet: buss, trikk,
-      T-bane og båt. Tallet er hvor mange sekunder hver prognose bommer med i snitt.
-      Lavere er bedre.
-    </p>
-    <div class="cards" id="cards"></div>
+  <div id="vinfo"></div>
+  <div id="chips"></div>
+  <div id="scale">
+    <span class="sw" style="background:#38bdf8"></span>før rutetid
+    <span class="sw" style="background:#e8eef6"></span>i rute
+    <span class="sw" style="background:#fbbf24"></span>1–3 min
+    <span class="sw" style="background:#fb923c"></span>3–6 min
+    <span class="sw" style="background:#ef4444"></span>6+ min
   </div>
 </section>
 
-<section>
-  <div class="inner">
-    <h2>Jo lenger frem du spør, jo verre går det</h2>
-    <p class="note">
-      Den offisielle prognosen antar i praksis at forsinkelsen står stille. Det holder
-      i ett minutt. Det holder ikke i tjue.
-    </p>
-    <div class="bars" id="bars"></div>
-    <table class="data" id="table"></table>
+<section class="screen">
+  <div class="duel2">
+    <div><div class="who2">Entur bommer med</div><div class="big them mono" id="s-them">0</div></div>
+    <div><div class="who2">Punktlig bommer med</div><div class="big us mono" id="s-us">0</div></div>
   </div>
+  <p class="punch" id="punch"></p>
+  <div class="cue">tallene bak</div>
 </section>
 
-<section>
-  <div class="inner">
-    <h2>Det ubehagelige funnet</h2>
-    <p class="note" id="naive-note"></p>
-    <div class="caveat" id="caveat"></div>
-  </div>
+<section class="screen">
+  <h2>Regnskapet</h2>
+  <p class="lede" style="margin-top:0">
+    Gjennomsnittlig bom i sekunder per horisont, målt på en hel dag modellen aldri
+    har trent på. Lavere er bedre.
+  </p>
+  <table class="data" id="table" style="margin-top:2.5rem"></table>
+  <div class="caveat" id="caveat"></div>
 </section>
 
 <footer>
   <p id="stamp"></p>
-  <p>
-    Åpen kildekode på <a href="https://github.com/triceraz/Punktlig">github.com/triceraz/Punktlig</a>.
-    Sanntids- og rutedata fra <a href="https://developer.entur.org/">Entur</a> (NLOD),
-    værvarsler fra <a href="https://api.met.no/">MET Norway</a> (CC BY 4.0).
-    Posisjonene er beregnet mellom stoppene, ikke målt. Ikke tilknyttet Entur eller Ruter.
-  </p>
+  <p>Åpen kildekode på <a href="https://github.com/triceraz/Punktlig">github.com/triceraz/Punktlig</a>.
+     Data fra <a href="https://developer.entur.org/">Entur</a> (NLOD) og
+     <a href="https://api.met.no/">MET Norway</a> (CC BY 4.0).
+     Posisjonene er beregnet mellom stoppene, ikke målt. Ikke tilknyttet Entur eller Ruter.</p>
 </footer>
 
 <script>
-const NAMES = { timetable: "Rutetabell", naive: "Naiv", entur: "Entur", model: "Punktlig" };
+const pad = n => String(Math.floor(Math.abs(n))).padStart(2, "0");
+const clockText = sec => (sec < 0 ? "-" : "") +
+  Math.floor(Math.abs(sec) / 60) + ":" + pad(Math.abs(sec) % 60);
+const fmt = n => n.toLocaleString("nb-NO");
 const el = (t, c, x) => { const n = document.createElement(t); if (c) n.className = c;
   if (x !== undefined) n.textContent = x; return n; };
-const fmt = n => n.toLocaleString("nb-NO");
 
 function delayColour(sec) {
   if (sec < -60) return "#38bdf8";
-  if (sec < 60) return "#34d399";
+  if (sec < 60) return "#e8eef6";
   if (sec < 180) return "#fbbf24";
   if (sec < 360) return "#fb923c";
   return "#ef4444";
 }
 
 fetch("data.json").then(r => r.json()).then(d => {
-  drawMap(d);
-  drawDuel(d);
-  drawScore(d);
+  countdown(d); drawMap(d); score(d);
 });
 
-/* ---------------- map ---------------- */
+/* ---------- 1 and 2: the clocks ---------- */
+function countdown(d) {
+  const close = d.vehicles.filter(v => v.in_min > 0.8 && v.in_min < 8);
+  const pick = close.filter(v => v.model - v.entur > 45 && v.model - v.entur < 420)
+                    .sort((a, b) => (b.model - b.entur) - (a.model - a.entur))[0]
+    || close.sort((a, b) => Math.abs(b.entur - b.model) - Math.abs(a.entur - a.model))[0]
+    || d.vehicles[0];
+  if (!pick) return;
+
+  const t0 = Date.now(), enturSec = pick.in_min * 60;
+  const modelSec = enturSec + (pick.model - pick.entur);
+  document.getElementById("ctx-line").textContent =
+    "Linje " + pick.line + " mot " + (pick.stop || "neste stopp");
+  document.getElementById("t-gap").textContent =
+    Math.round(Math.abs(pick.entur - pick.model)) + " sekunder";
+
+  const clock = document.getElementById("clock");
+  const verdict = document.getElementById("verdict");
+  const src = document.getElementById("ctx-src");
+  (function tick() {
+    const gone = (Date.now() - t0) / 1000, left = enturSec - gone;
+    clock.textContent = clockText(Math.round(left));
+    document.getElementById("t-them").textContent = clockText(Math.round(left));
+    document.getElementById("t-us").textContent = clockText(Math.round(modelSec - gone));
+    if (left <= 0) {
+      clock.classList.add("late"); verdict.classList.add("on");
+      src.textContent = "appen sa at den skulle vært her";
+    }
+    requestAnimationFrame(tick);
+  })();
+}
+
+/* ---------- 3: the map ---------- */
 function drawMap(d) {
-  const canvas = document.getElementById("map");
-  const ctx = canvas.getContext("2d");
-  const stops = d.network.stops, edges = d.network.edges, vehicles = d.vehicles;
+  const canvas = document.getElementById("map"), ctx = canvas.getContext("2d");
+  const stops = d.network.stops, routes = d.network.routes, vehicles = d.vehicles;
+  const modes = [...new Set(routes.map(r => r.mode))];
+  const NAMES = { metro: "T-bane", tram: "Trikk", bus: "Buss", water: "Båt", rail: "Tog" };
+  const on = new Set(modes.filter(m => m !== "bus"));
   let view = null, hover = null;
+
+  const chips = document.getElementById("chips");
+  modes.forEach(m => {
+    const c = el("button", "chip" + (on.has(m) ? " on" : ""), NAMES[m] || m);
+    c.onclick = () => { on.has(m) ? on.delete(m) : on.add(m); c.classList.toggle("on"); };
+    chips.append(c);
+  });
 
   function project() {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const w = canvas.clientWidth, h = canvas.clientHeight;
-    // A page opened in a hidden tab measures zero and would never draw again,
-    // so give up on this frame and let the loop try the next one.
     if (w < 2 || h < 2) { view = null; return; }
     canvas.width = w * dpr; canvas.height = h * dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-    // Web Mercator: both axes in radians, or the map collapses to a line.
     const mx = lon => lon * Math.PI / 180;
     const my = lat => Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360));
-    let minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9;
+    let a0 = 1e9, a1 = -1e9, b0 = 1e9, b1 = -1e9;
     for (const s of stops) {
       const a = mx(s[0]), b = my(s[1]);
-      if (a < minx) minx = a; if (a > maxx) maxx = a;
-      if (b < miny) miny = b; if (b > maxy) maxy = b;
+      if (a < a0) a0 = a; if (a > a1) a1 = a; if (b < b0) b0 = b; if (b > b1) b1 = b;
     }
-    const pad = 0.06;
-    const s = Math.min(w * (1 - pad * 2) / (maxx - minx),
-                       h * (1 - pad * 2) / (maxy - miny));
-    view = {
-      w, h, s,
-      x: lon => (mx(lon) - minx) * s + (w - (maxx - minx) * s) / 2,
-      y: lat => h - ((my(lat) - miny) * s + (h - (maxy - miny) * s) / 2),
-    };
+    const s = Math.min(w * .84 / (a1 - a0), h * .84 / (b1 - b0));
+    view = { w, h,
+      x: lon => (mx(lon) - a0) * s + (w - (a1 - a0) * s) / 2,
+      y: lat => h - ((my(lat) - b0) * s + (h - (b1 - b0) * s) / 2) };
   }
 
   function render(t) {
@@ -288,23 +277,28 @@ function drawMap(d) {
       if (!view) { requestAnimationFrame(render); return; }
     }
     ctx.clearRect(0, 0, view.w, view.h);
+    ctx.lineCap = "round"; ctx.lineJoin = "round";
 
-    ctx.lineWidth = 0.8; ctx.strokeStyle = "rgba(120,150,190,.16)";
-    ctx.beginPath();
-    for (const e of edges) {
-      const a = stops[e[0]], b = stops[e[1]];
-      ctx.moveTo(view.x(a[0]), view.y(a[1]));
-      ctx.lineTo(view.x(b[0]), view.y(b[1]));
+    for (const r of routes) {
+      if (!on.has(r.mode)) continue;
+      ctx.beginPath();
+      for (let i = 0; i < r.path.length; i++) {
+        const s = stops[r.path[i]];
+        i ? ctx.lineTo(view.x(s[0]), view.y(s[1])) : ctx.moveTo(view.x(s[0]), view.y(s[1]));
+      }
+      ctx.lineWidth = r.weight;
+      ctx.globalAlpha = r.mode === "bus" ? .38 : .92;
+      ctx.strokeStyle = r.colour; ctx.stroke();
     }
-    ctx.stroke();
+    ctx.globalAlpha = 1;
 
-    const pulse = 0.5 + 0.5 * Math.sin(t / 900);
+    const pulse = .5 + .5 * Math.sin(t / 850);
     for (const v of vehicles) {
-      const x = view.x(v.lon), y = view.y(v.lat);
-      const c = delayColour(v.now);
-      const r = v === hover ? 6 : 2.6;
-      ctx.beginPath(); ctx.arc(x, y, r + 3.5 + pulse * 1.2, 0, 6.284);
-      ctx.fillStyle = c + "22"; ctx.fill();
+      if (!on.has(v.mode)) continue;
+      const x = view.x(v.lon), y = view.y(v.lat), c = delayColour(v.now);
+      const r = v === hover ? 6 : 2.9;
+      ctx.beginPath(); ctx.arc(x, y, r + 4 + pulse * 1.6, 0, 6.284);
+      ctx.fillStyle = c + "26"; ctx.fill();
       ctx.beginPath(); ctx.arc(x, y, r, 0, 6.284);
       ctx.fillStyle = c; ctx.fill();
     }
@@ -312,101 +306,65 @@ function drawMap(d) {
   }
 
   function nearest(px, py) {
-    let best = null, bd = 18 * 18;
+    let best = null, bd = 400;
     for (const v of vehicles) {
-      const dx = view.x(v.lon) - px, dy = view.y(v.lat) - py;
-      const dist = dx * dx + dy * dy;
+      if (!on.has(v.mode)) continue;
+      const dx = view.x(v.lon) - px, dy = view.y(v.lat) - py, dist = dx * dx + dy * dy;
       if (dist < bd) { bd = dist; best = v; }
     }
     return best;
   }
-
-  canvas.addEventListener("mousemove", ev => {
+  canvas.onmousemove = ev => {
     const r = canvas.getBoundingClientRect();
-    hover = nearest(ev.clientX - r.left, ev.clientY - r.top);
+    hover = view && nearest(ev.clientX - r.left, ev.clientY - r.top);
     canvas.style.cursor = hover ? "pointer" : "default";
-  });
-  canvas.addEventListener("click", ev => {
+  };
+  canvas.onclick = ev => {
     const r = canvas.getBoundingClientRect();
-    const v = nearest(ev.clientX - r.left, ev.clientY - r.top);
-    const box = document.getElementById("detail");
+    const v = view && nearest(ev.clientX - r.left, ev.clientY - r.top);
+    const box = document.getElementById("vinfo");
     if (!v) { box.classList.remove("on"); return; }
-    box.classList.add("on");
-    box.innerHTML = "";
+    const colour = (routes.find(x => x.line === v.line && x.mode === v.mode) || {}).colour || "#888";
+    box.classList.add("on"); box.innerHTML = "";
     const head = el("div");
-    head.append(el("span", "line-badge", v.line));
-    head.append(el("span", "", "  " + (v.stop || "")));
+    const badge = el("span", "badge", v.line); badge.style.background = colour;
+    head.append(badge, el("span", "", "  " + (v.stop || "")));
     box.append(head);
     const table = el("table");
-    [["Forsinket nå", Math.round(v.now) + " s"],
-     ["Framme om", v.in_min + " min"],
-     ["Entur tror", v.entur + " s"],
-     ["Punktlig tror", v.model + " s"]].forEach(p => {
-      const tr = el("tr"); tr.append(el("td", "", p[0]), el("td", "", p[1])); table.append(tr);
-    });
+    [["Forsinket nå", Math.round(v.now) + " s"], ["Framme om", v.in_min + " min"],
+     ["Entur tror", v.entur + " s"], ["Punktlig tror", v.model + " s"]]
+      .forEach(p => { const tr = el("tr");
+        tr.append(el("td", "", p[0]), el("td", "", p[1])); table.append(tr); });
     box.append(table);
-  });
-
-  document.getElementById("counter").textContent =
-    fmt(vehicles.length) + " kjøretøy ute nå";
-
-  project(); requestAnimationFrame(render);
-  window.addEventListener("resize", project);
-}
-
-/* ---------------- the duel ---------------- */
-function drawDuel(d) {
-  // A disagreement worth showing: big enough to matter, small enough to be a
-  // real difference of opinion rather than one side having lost the plot.
-  const pick = d.vehicles
-    .filter(v => v.in_min > 1 && v.in_min < 20 &&
-                 Math.abs(v.entur - v.model) > 60 && Math.abs(v.entur - v.model) < 400)
-    .sort((a, b) => a.in_min - b.in_min)[0]
-    || d.vehicles.filter(v => v.in_min > 1).sort((a, b) => a.in_min - b.in_min)[0];
-  if (!pick) return;
-  // Under a minute the app says "Nå", which is the whole point of the page.
-  const label = x => {
-    const m = pick.in_min + (x - pick.entur) / 60;
-    return m < 1 ? "Nå" : Math.round(m) + " min";
   };
-  document.getElementById("duel-them").textContent = label(pick.entur);
-  document.getElementById("duel-us").textContent = label(pick.model);
-  document.getElementById("duel-what").textContent = pick.stop || "";
-  document.getElementById("duel-line").textContent = "Linje " + pick.line;
-  const gap = Math.round(Math.abs(pick.entur - pick.model));
-  document.getElementById("verdict").innerHTML =
-    "De er <b>" + gap + " sekunder</b> uenige om denne avgangen. " +
-    "Om noen minutter vet vi hvem som hadde rett, og svaret havner rett i arkivet.";
+  project(); requestAnimationFrame(render);
+  addEventListener("resize", project);
 }
 
-/* ---------------- score ---------------- */
-function drawScore(d) {
+/* ---------- 4 and 5: the score ---------- */
+function score(d) {
   const w = d.score.weighted;
-  const gain = (w.entur - w.model) / w.entur * 100;
-  const cards = document.getElementById("cards");
-  [["Punktlig bommer med", w.model + " s", "us", "i snitt, over alle horisonter"],
-   ["Entur bommer med", w.entur + " s", "them", "på nøyaktig de samme radene"],
-   ["Bedre", gain.toFixed(0) + " %", "us", "og på hver eneste horisont"],
-   ["Målt på", fmt(d.score.rows), "", "prediksjoner modellen aldri har sett"]
-  ].forEach(c => {
-    const box = el("div", "card");
-    box.append(el("div", "k", c[0]), el("div", "v " + c[2], c[1]), el("div", "n", c[3]));
-    cards.append(box);
-  });
+  const run = (id, to) => {
+    const node = document.getElementById(id), t0 = performance.now();
+    (function step(t) {
+      const k = Math.min(1, (t - t0) / 1300), e = 1 - Math.pow(1 - k, 3);
+      node.innerHTML = (to * e).toFixed(1) + '<span class="unit"> s</span>';
+      if (k < 1) requestAnimationFrame(step);
+    })(t0);
+  };
+  const seen = new WeakSet();
+  new IntersectionObserver(es => es.forEach(e => {
+    if (e.isIntersecting && !seen.has(e.target)) {
+      seen.add(e.target); run("s-them", w.entur); run("s-us", w.model);
+    }
+  }), { threshold: .4 }).observe(document.getElementById("s-us"));
 
-  const worst = Math.max(...d.score.buckets.map(b => b.timetable));
-  const bars = document.getElementById("bars");
-  d.score.buckets.forEach(b => {
-    const row = el("div", "bar-row");
-    row.append(el("div", "label", b.horizon.replace("min", " min")));
-    const track = el("div", "track");
-    [["model", "us"], ["entur", "them"], ["naive", "naive"]].forEach(p => {
-      const bar = el("div", "bar " + p[1], NAMES[p[0]] + "   " + b[p[0]] + " s");
-      bar.style.width = Math.max(16, b[p[0]] / worst * 100) + "%";
-      track.append(bar);
-    });
-    row.append(track); bars.append(row);
-  });
+  const gain = ((w.entur - w.model) / w.entur * 100).toFixed(0);
+  document.getElementById("punch").innerHTML =
+    "Det er <b>" + gain + " prosent</b> bedre, på hver eneste horisont. " +
+    "Og her er det ubehagelige: den dummeste tenkelige gjetningen, bare anta at " +
+    "forsinkelsen vogna har nå også gjelder ved hvert stopp videre, bommer med <b>" +
+    w.naive + " sekunder</b>. Altså mindre enn den offisielle prognosen.";
 
   const t = document.getElementById("table");
   t.innerHTML = "<thead><tr><th>Horisont</th><th>Prediksjoner</th><th>Rutetabell</th>" +
@@ -423,28 +381,20 @@ function drawScore(d) {
   const sum = el("tr");
   sum.append(el("td", "", "Vektet"), el("td", "", fmt(d.score.rows)),
     el("td", "", w.timetable + " s"), el("td", "", w.naive + " s"),
-    el("td", w.entur < w.naive ? "" : "lose", w.entur + " s"),
-    el("td", "win", w.model + " s"));
+    el("td", "lose", w.entur + " s"), el("td", "win", w.model + " s"));
   body.append(sum); t.append(body);
 
-  document.getElementById("naive-note").innerHTML =
-    "Vi startet med den dummeste tenkelige prognosen: anta at forsinkelsen vogna har nå, " +
-    "har den også ved hvert eneste stopp videre. Ingen modell, ingen læring, én linje kode. " +
-    "Den bommer med <b>" + w.naive + " sekunder</b>. Enturs egen prognose bommer med <b>" +
-    w.entur + "</b>. Den dummeste tenkelige gjetningen er altså bedre enn det som står i appen.";
-
   document.getElementById("caveat").innerHTML =
-    "<b>Forbeholdene, fordi de hører hjemme foran og ikke i en fotnote.</b> " +
-    "Arkivet er noen få døgn gammelt, så tallene vil flytte seg. Modellen er trent på en " +
-    "firedel av avgangene, fordi hele datasettet ennå ikke får plass i minnet under bygging. " +
-    "Togdata finnes bare i valideringen, ikke i treningen. Posisjonene på kartet er regnet " +
-    "ut mellom stoppene, ikke målt. Målingen er gjort på én dag modellen aldri har sett, og " +
-    "det er den eneste sammenligningen som betyr noe her.";
+    "<b>Forbeholdene, foran og ikke i en fotnote.</b> Arkivet er noen få døgn gammelt, " +
+    "så tallene vil flytte seg. Modellen er trent på en firedel av avgangene, fordi hele " +
+    "datasettet ennå ikke får plass i minnet under bygging. Togdata finnes bare i " +
+    "valideringen, ikke i treningen. Posisjonene på kartet er regnet ut mellom stoppene, " +
+    "ikke målt.";
 
   document.getElementById("stamp").textContent =
     "Data hentet " + new Date(d.generated_at).toLocaleString("nb-NO",
-      { dateStyle: "long", timeStyle: "short" }) +
-    ". Modellen er trent på " + fmt(d.score.trained_on) + " rader.";
+      { dateStyle: "long", timeStyle: "short" }) + " · modellen trent på " +
+    fmt(d.score.trained_on) + " rader";
 }
 </script>
 </body>

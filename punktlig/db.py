@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS line (
   mode       TEXT,
   public_code TEXT,
   name       TEXT,
+  colour     TEXT,     -- the operator's own line colour, for drawing the map
   fetched_at TEXT
 );
 

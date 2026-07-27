@@ -39,6 +39,55 @@ def _inside(lat, lon):
     return BBOX[0] <= lat <= BBOX[1] and BBOX[2] <= lon <= BBOX[3]
 
 
+# Entur publishes one colour per transport mode, so every metro line comes back
+# the same orange. Ruter's own metro map gives each line its own colour, and
+# that colouring is the thing an Osloite recognises before reading a word, so
+# the five lines are named here. Read off Ruter's official metro map.
+METRO_COLOURS = {
+    "1": "#1B9AD8",  # Frognerseteren - Bergkrystallen
+    "2": "#EC700C",  # Østerås - Ellingsrudåsen
+    "3": "#B14FA0",  # Kolsås - Mortensrud
+    "4": "#00437B",  # Vestli - Bergkrystallen
+    "5": "#3EA845",  # Sognsvann - Vestli
+}
+
+# Where a line has no colour of its own, the mode decides. Bus is deliberately
+# dim: 377 bus lines drawn as brightly as five metro lines is porridge.
+MODE_COLOURS = {
+    "metro": "#EC700C", "tram": "#0B91EF", "rail": "#5B7FDE",
+    "water": "#00A0A0", "bus": "#33404F",
+}
+MODE_WEIGHT = {"metro": 3.4, "tram": 2.2, "rail": 1.8, "water": 1.4, "bus": 0.7}
+
+ROUTES_SQL = """
+WITH recent AS (
+    SELECT c.line_ref, c.direction, c.journey_ref, c.operating_date,
+           c.order_no, c.stop_ref
+    FROM src.call_snapshot c
+    WHERE c.poll_id >= (SELECT MAX(poll_id) - {polls} FROM src.poll)
+      AND c.stop_ref IS NOT NULL AND c.order_no IS NOT NULL
+), sized AS (
+    SELECT line_ref, direction, journey_ref, operating_date,
+           COUNT(DISTINCT order_no) AS stops
+    FROM recent GROUP BY ALL
+), best AS (
+    SELECT * EXCLUDE (rn) FROM (
+        SELECT *, row_number() OVER (
+            PARTITION BY line_ref, direction ORDER BY stops DESC) AS rn
+        FROM sized
+    ) WHERE rn = 1
+), ordered AS (
+    SELECT DISTINCT b.line_ref, b.direction, r.order_no, r.stop_ref
+    FROM best b
+    JOIN recent r
+      ON r.line_ref = b.line_ref AND r.direction IS NOT DISTINCT FROM b.direction
+     AND r.journey_ref = b.journey_ref AND r.operating_date = b.operating_date
+)
+SELECT line_ref, direction, list(stop_ref ORDER BY order_no) AS path
+FROM ordered GROUP BY line_ref, direction
+"""
+
+
 EDGES_SQL = """
 SELECT DISTINCT a.stop_ref, b.stop_ref, l.mode
 FROM src.call_snapshot a
@@ -51,13 +100,13 @@ WHERE a.stop_ref IS NOT NULL AND b.stop_ref IS NOT NULL
 """
 
 
-def network(conn, db_path=DB_PATH, recent_polls=400):
-    """Stops with positions, and the segments lines actually run between.
+def network(conn, db_path=DB_PATH, recent_polls=600):
+    """The lines as they actually run: one path of real positions per route.
 
-    The self-join that finds consecutive stops is a scan over the whole
-    archive, which SQLite does slowly and DuckDB does in seconds. It only
-    needs recent polls: the shape of the network is the same yesterday as
-    today, and a stop pair seen once is a stop pair.
+    Drawn from the archive rather than from a schematic, so the shape on
+    screen is the shape on the ground. Each line and direction contributes the
+    longest journey pattern seen recently, which is the full route rather than
+    a short-turn variant.
     """
     import duckdb
 
@@ -69,16 +118,24 @@ def network(conn, db_path=DB_PATH, recent_polls=400):
         )
         if _inside(lat, lon)
     }
+    meta = {
+        ref: (mode or "bus", code, colour)
+        for ref, mode, code, colour in conn.execute(
+            "SELECT line_ref, mode, public_code, colour FROM line"
+        )
+    }
+
     duck = duckdb.connect()
     try:
         duck.execute("SET memory_limit='1GB'")
         duck.execute("INSTALL sqlite; LOAD sqlite;")
         duck.execute(f"ATTACH '{db_path}' AS src (TYPE sqlite, READ_ONLY)")
-        pairs = duck.execute(EDGES_SQL.format(polls=recent_polls)).fetchall()
+        found = duck.execute(ROUTES_SQL.format(polls=recent_polls)).fetchall()
     finally:
         duck.close()
 
-    used, index, stops = {}, [], []
+    used, stops = {}, []
+
     def idx(ref):
         if ref not in used:
             lon, lat, name = quays[ref]
@@ -86,14 +143,27 @@ def network(conn, db_path=DB_PATH, recent_polls=400):
             stops.append([lon, lat, name])
         return used[ref]
 
-    edges = []
-    seen = set()
-    for a, b, mode in pairs:
-        if a not in quays or b not in quays or (a, b) in seen:
+    routes, seen = [], set()
+    for line_ref, direction, path in found:
+        mode, code, colour = meta.get(line_ref, ("bus", None, None))
+        points = [idx(r) for r in path if r in quays]
+        if len(points) < 2:
             continue
-        seen.add((a, b))
-        edges.append([idx(a), idx(b), mode or "bus"])
-    return {"stops": stops, "edges": edges}
+        key = (line_ref, tuple(points))
+        if key in seen:
+            continue
+        seen.add(key)
+        routes.append({
+            "line": code or (line_ref or "").split(":")[-1],
+            "mode": mode,
+            "colour": (METRO_COLOURS.get(code) if mode == "metro" else None)
+                      or (f"#{colour}" if colour else None)
+                      or MODE_COLOURS.get(mode, "#33404F"),
+            "weight": MODE_WEIGHT.get(mode, 0.7),
+            "path": points,
+        })
+    routes.sort(key=lambda r: MODE_WEIGHT.get(r["mode"], 0))
+    return {"stops": stops, "routes": routes}
 
 
 def vehicles(conn, rows, now=None):
@@ -231,7 +301,7 @@ def main(argv=None):
     payload = build(out=args.out, model_dir=args.model)
     size = Path(args.out).stat().st_size / 1e6
     print(f"{len(payload['network']['stops'])} stops, "
-          f"{len(payload['network']['edges'])} edges, "
+          f"{len(payload['network']['routes'])} routes, "
           f"{len(payload['vehicles'])} vehicles -> {args.out} ({size:.1f} MB)")
     return 0
 
