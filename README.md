@@ -164,6 +164,26 @@ Quantile 0.6 cuts the countdown-lied failures by a fifth, from 28.7 to 22.6 perc
 
 Overall coverage is 77.4 percent against the 80 percent the interval claims, so the bands are slightly too narrow, and honestly labelled as such. Width grows with the horizon, which is the expected shape: the further ahead the question, the less anyone can know.
 
+### Answering the passenger's actual question
+
+A passenger does not ask for the 80th percentile. They ask whether the tram will be here within two minutes. That is the same distribution read the other way round: instead of fixing a probability and asking for a time, fix the time and ask for the probability.
+
+`python3 -m punktlig.quantiles --ladder` fits seven quantiles from the 5th to the 95th, repairs any crossings, and reads probabilities off the ladder by interpolation. The median rung is the main prediction; the rest describe how wrong it might be.
+
+Whether those probabilities are true is a separate question from whether the model is accurate, and it needs its own check. Grouping every validation row by what we claimed, against what happened:
+
+| We said | n | Actually happened |
+|---|---|---|
+| 0-20 % | 73 986 | 0.4 % |
+| 20-40 % | 1 752 | 23.7 % |
+| 40-60 % | 1 970 | 43.3 % |
+| 60-80 % | 3 076 | 73.0 % |
+| 80-100 % | 12 397 | 97.0 % |
+
+Read the middle rows first: when the model says roughly half, it happens roughly half the time. The claim holds where it is hardest to be right. The top band under-promises, arriving 97 percent of the time where the average claim is nearer 90, which is the safer direction to be wrong in but still a miscalibration worth naming.
+
+The general version of the same check asks how the outcomes spread across the whole distribution, not just one deadline. A calibrated model puts a tenth of them in each tenth of its predicted range; this one produces 9.6, 9.1, 10.0, 7.4, 7.5, 12.1, 9.9, 12.1, 9.9 and 12.4 percent.
+
 ## Tuning
 
 Every parameter change was measured on one frozen dataset, one change at a time, against the same validation day.
