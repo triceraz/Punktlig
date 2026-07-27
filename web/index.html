@@ -313,9 +313,15 @@ function drawMap(d) {
         const s = stops[r.path[i]];
         i ? ctx.lineTo(view.x(s[0]), view.y(s[1])) : ctx.moveTo(view.x(s[0]), view.y(s[1]));
       }
-      ctx.lineWidth = r.weight;
-      ctx.globalAlpha = r.mode === "bus" ? .38 : .92;
-      ctx.strokeStyle = r.colour; ctx.stroke();
+      // Buses carry the operator's own red and green, which is exactly the
+      // scale the dots use for how late something is. Two meanings on one
+      // colour is unreadable, so the bus web goes neutral and the delay scale
+      // keeps red to itself.
+      const bus = r.mode === "bus";
+      ctx.lineWidth = bus ? .8 : r.weight * 1.25;
+      ctx.globalAlpha = bus ? .5 : .95;
+      ctx.strokeStyle = bus ? "#243040" : r.colour;
+      ctx.stroke();
     }
     ctx.globalAlpha = 1;
 
