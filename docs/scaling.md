@@ -35,6 +35,30 @@ whatever passed, and averaging a quarter of the vehicles measures something
 different from what the model will meet in production. Sampling belongs in
 training, where dropping rows is unbiased, not in feature construction.
 
+## What the measurements said
+
+Two attempts to fix this in Python, both measured rather than assumed:
+
+**Counting into time buckets instead of storing every observation.** Memory
+should then follow the calendar rather than the traffic. It did help, from
+6.8 GB down to 3.1 GB on a comparable run, but not enough. The archive has
+6 194 stops, 235 lines and 11 925 line-direction-stop combinations, so at
+fifteen-minute buckets over two days the index still holds millions of
+entries, and a Python dictionary entry holding a count and a sum costs a
+couple of hundred bytes. Multiply by a month and the saving is irrelevant.
+
+**Sorting on disk rather than in memory.** The replay reads every call in
+chronological order per journey, which no index can satisfy because the
+timestamp lives in the poll table, so SQLite sorts twenty-five million rows.
+Setting `temp_store=FILE` was worth doing and is kept, but it was not the
+cause: memory still climbed with the pragma confirmed active and no
+temporary files written.
+
+The conclusion is the one below, now with evidence: aggregating history in
+Python dictionaries is the wrong shape for this problem no matter how the
+buckets are drawn, because the cost is per entity per bucket and both grow.
+The aggregation belongs in a database.
+
 ## The shape of the fix
 
 Move feature construction into DuckDB, which the project already depends on
