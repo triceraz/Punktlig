@@ -200,9 +200,18 @@ function delayColour(sec) {
   return "#ef4444";
 }
 
-fetch("data.json").then(r => r.json()).then(d => {
-  countdown(d); drawMap(d); score(d);
-});
+// The data file is rewritten as the archive grows, so it must never come from
+// a cache: a stale copy shows yesterday's vehicles as if they were running.
+fetch("data.json?t=" + Date.now(), { cache: "no-store" })
+  .then(r => r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status)))
+  .then(d => { countdown(d); drawMap(d); score(d); })
+  .catch(err => {
+    document.getElementById("clock").textContent = "—";
+    document.getElementById("clock").style.fontSize = "3rem";
+    document.getElementById("ctx-line").textContent =
+      "fikk ikke tak i sanntidsdataene akkurat nå";
+    document.getElementById("ctx-src").textContent = String(err.message || err);
+  });
 
 /* ---------- 1 and 2: the clocks ---------- */
 function countdown(d) {
@@ -248,7 +257,11 @@ function drawMap(d) {
   const chips = document.getElementById("chips");
   modes.forEach(m => {
     const c = el("button", "chip" + (on.has(m) ? " on" : ""), NAMES[m] || m);
-    c.onclick = () => { on.has(m) ? on.delete(m) : on.add(m); c.classList.toggle("on"); };
+    c.onclick = () => {
+      on.has(m) ? on.delete(m) : on.add(m);
+      c.classList.toggle("on");
+      project();  // the view frames whatever is showing
+    };
     chips.append(c);
   });
 
@@ -260,11 +273,19 @@ function drawMap(d) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const mx = lon => lon * Math.PI / 180;
     const my = lat => Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360));
-    let a0 = 1e9, a1 = -1e9, b0 = 1e9, b1 = -1e9;
-    for (const s of stops) {
-      const a = mx(s[0]), b = my(s[1]);
-      if (a < a0) a0 = a; if (a > a1) a1 = a; if (b < b0) b0 = b; if (b > b1) b1 = b;
+    // Bounds come from what is actually shown. Measuring all five thousand
+    // stops while drawing only the metro shrinks the network to a blob in the
+    // middle of an empty screen, which is exactly how it looked.
+    let a0 = 1e9, a1 = -1e9, b0 = 1e9, b1 = -1e9, seen = 0;
+    for (const r of routes) {
+      if (!on.has(r.mode)) continue;
+      for (const p of r.path) {
+        const s = stops[p], a = mx(s[0]), b = my(s[1]);
+        if (a < a0) a0 = a; if (a > a1) a1 = a; if (b < b0) b0 = b; if (b > b1) b1 = b;
+        seen++;
+      }
     }
+    if (seen < 2) { view = null; return; }
     const s = Math.min(w * .84 / (a1 - a0), h * .84 / (b1 - b0));
     view = { w, h,
       x: lon => (mx(lon) - a0) * s + (w - (a1 - a0) * s) / 2,
@@ -292,10 +313,13 @@ function drawMap(d) {
     }
     ctx.globalAlpha = 1;
 
+    // Every vehicle is drawn, whatever the line filter says. The lines are the
+    // skeleton and the dots are the life; hiding four fifths of them to keep
+    // the bus routes off the map leaves an empty city.
     const pulse = .5 + .5 * Math.sin(t / 850);
     for (const v of vehicles) {
-      if (!on.has(v.mode)) continue;
       const x = view.x(v.lon), y = view.y(v.lat), c = delayColour(v.now);
+      if (x < -20 || y < -20 || x > view.w + 20 || y > view.h + 20) continue;
       const r = v === hover ? 6 : 2.9;
       ctx.beginPath(); ctx.arc(x, y, r + 4 + pulse * 1.6, 0, 6.284);
       ctx.fillStyle = c + "26"; ctx.fill();
@@ -308,7 +332,6 @@ function drawMap(d) {
   function nearest(px, py) {
     let best = null, bd = 400;
     for (const v of vehicles) {
-      if (!on.has(v.mode)) continue;
       const dx = view.x(v.lon) - px, dy = view.y(v.lat) - py, dist = dx * dx + dy * dy;
       if (dist < bd) { bd = dist; best = v; }
     }
