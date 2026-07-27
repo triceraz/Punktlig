@@ -33,6 +33,12 @@ from .lines import line_modes, refresh_lines
 from .weather import fetch_weather_rows
 
 
+# Consecutive failed polls before the connection is replaced, and before the
+# process gives up so the scheduler can restart it.
+RECONNECT_AFTER = 2
+GIVE_UP_AFTER = 5
+
+
 def _now():
     return datetime.now(timezone.utc)
 
@@ -138,6 +144,59 @@ def poll_once(conn, save_raw=True):
     return stats
 
 
+def run(conn, once=False, interval=60, save_raw=True, sleep=time.sleep,
+        connect=None, poll=None):
+    """Poll until told to stop, surviving transient failures and quitting on stuck ones.
+
+    A database connection can end up permanently unable to write while the
+    process looks healthy (a VACUUM collision did exactly that on
+    2026-07-27). Repeated failures therefore first get a fresh connection,
+    and if that does not help the process exits non-zero so the scheduler
+    restarts it cleanly. Raw responses are archived before any database
+    write, so even a run that ends this way loses nothing that
+    `punktlig.reparse` cannot put back.
+    """
+    connect = connect or (lambda: db.connect(DB_PATH))
+    poll = poll or poll_once
+    failures = 0
+
+    while True:
+        started = time.monotonic()
+        try:
+            stats = poll(conn, save_raw=save_raw)
+            _log(
+                f"et: {stats['journeys']} journeys, {stats['calls']} calls "
+                f"({stats['dropped']} dropped, {stats['pages']} page(s), {stats['ms']} ms)"
+            )
+            failures = 0
+        except Exception as exc:
+            failures += 1
+            _log(f"et: ERROR {exc}")
+            try:
+                db.insert_poll(
+                    conn, polled_at=_now().isoformat(), feed="et", dataset=DATASET, error=str(exc)
+                )
+            except Exception:
+                pass
+            if failures >= GIVE_UP_AFTER:
+                _log(
+                    f"et: {failures} consecutive failures, exiting so the "
+                    "scheduler can restart from a clean process"
+                )
+                return 1
+            if failures >= RECONNECT_AFTER:
+                _log("et: reconnecting to the database")
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                conn = connect()
+
+        if once:
+            return 0
+        sleep(max(5.0, interval - (time.monotonic() - started)))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Punktlig data collector")
     group = parser.add_mutually_exclusive_group(required=True)
@@ -149,29 +208,7 @@ def main(argv=None):
 
     conn = db.connect(DB_PATH)
     _log(f"db: {DB_PATH} | dataset: {DATASET} | modes: {','.join(MODES)}")
-
-    while True:
-        started = time.monotonic()
-        try:
-            stats = poll_once(conn, save_raw=not args.no_raw)
-            _log(
-                f"et: {stats['journeys']} journeys, {stats['calls']} calls "
-                f"({stats['dropped']} dropped, {stats['pages']} page(s), {stats['ms']} ms)"
-            )
-        except Exception as exc:
-            _log(f"et: ERROR {exc}")
-            try:
-                db.insert_poll(
-                    conn, polled_at=_now().isoformat(), feed="et", dataset=DATASET, error=str(exc)
-                )
-            except Exception:
-                pass
-
-        if args.once:
-            break
-        time.sleep(max(5.0, args.interval - (time.monotonic() - started)))
-
-    return 0
+    return run(conn, once=args.once, interval=args.interval, save_raw=not args.no_raw)
 
 
 if __name__ == "__main__":

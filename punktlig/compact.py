@@ -18,6 +18,7 @@ never imports this module.
 
 import argparse
 import shutil
+import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -99,6 +100,22 @@ def delete_day(conn, day):
     conn.commit()
 
 
+def vacuum(conn):
+    """Reclaim space, but never at the cost of the collector.
+
+    VACUUM rewrites the whole database and takes an exclusive lock, so a
+    collector mid-write blocks it, and on 2026-07-27 the collision left the
+    collector's connection unable to write for hours. Space can wait for the
+    next run; the archive cannot.
+    """
+    try:
+        conn.execute("VACUUM")
+        return True
+    except sqlite3.OperationalError as exc:
+        _log(f"vacuum skipped: {exc}")
+        return False
+
+
 def prune_raw(raw_dir, keep_days, today=None):
     today = today or datetime.now(timezone.utc).date()
     cutoff = (today - timedelta(days=keep_days)).isoformat()
@@ -136,7 +153,7 @@ def compact(db_path=DB_PATH, parquet_dir=PARQUET_DIR, keep_days=HOT_KEEP_DAYS,
             for day in days:
                 delete_day(conn, day)
                 _log(f"compacted {day}")
-            conn.execute("VACUUM")
+            vacuum(conn)
             conn.commit()
         else:
             _log("no completed days old enough to compact")

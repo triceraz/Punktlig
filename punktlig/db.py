@@ -80,10 +80,17 @@ CREATE TABLE IF NOT EXISTS weather_snapshot (
 """
 
 
+# Writers wait this long for a lock before raising. The collector shares the
+# database with compaction and ad-hoc analysis, and a lock held for a few
+# seconds is normal; failing instantly turns that into a lost poll.
+BUSY_TIMEOUT_MS = 30_000
+
+
 def connect(path):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=BUSY_TIMEOUT_MS / 1000)
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
     conn.executescript(SCHEMA)
     return conn
 
