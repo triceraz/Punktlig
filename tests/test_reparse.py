@@ -11,8 +11,10 @@ import gzip
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from punktlig import db
+from punktlig import reparse as reparse_module
 from punktlig.reparse import reparse
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_et.xml"
@@ -100,6 +102,40 @@ class ReparseTest(unittest.TestCase):
                         parquet_dir=self.parquet)
         self.assertEqual(stats["polls"], 0)
         self.assertEqual(self._rows("SELECT COUNT(*) FROM poll")[0][0], 1)
+
+    def test_widen_adds_new_modes_to_polls_that_already_exist(self):
+        # The raw files always held the whole feed; a narrower mode filter
+        # simply threw part of it away. Widening the filter has to be able to
+        # recover that without touching what is already stored.
+        self._write("100030_p1.xml.gz")
+        reparse(db_path=self.archive, raw_dir=self.raw, days=[DAY],
+                parquet_dir=self.parquet)
+        before = self._rows("SELECT COUNT(*) FROM call_snapshot")[0][0]
+        poll_ids = self._rows("SELECT poll_id FROM poll")
+
+        with mock.patch.object(reparse_module, "MODES", ["tram", "bus"]):
+            stats = reparse(db_path=self.archive, raw_dir=self.raw, days=[DAY],
+                            parquet_dir=self.parquet, widen=True)
+
+        self.assertEqual(stats["widened"], 1)
+        # The bus journey joins the same poll rather than creating a new one.
+        self.assertEqual(self._rows("SELECT poll_id FROM poll"), poll_ids)
+        lines = sorted(r[0] for r in self._rows("SELECT DISTINCT line_ref FROM call_snapshot"))
+        self.assertEqual(lines, ["RUT:Line:12", "RUT:Line:31"])
+        self.assertGreater(self._rows("SELECT COUNT(*) FROM call_snapshot")[0][0], before)
+
+    def test_widen_twice_changes_nothing_the_second_time(self):
+        self._write("100030_p1.xml.gz")
+        reparse(db_path=self.archive, raw_dir=self.raw, days=[DAY],
+                parquet_dir=self.parquet)
+        with mock.patch.object(reparse_module, "MODES", ["tram", "bus"]):
+            reparse(db_path=self.archive, raw_dir=self.raw, days=[DAY],
+                    parquet_dir=self.parquet, widen=True)
+            after_first = self._rows("SELECT COUNT(*) FROM call_snapshot")[0][0]
+            stats = reparse(db_path=self.archive, raw_dir=self.raw, days=[DAY],
+                            parquet_dir=self.parquet, widen=True)
+        self.assertEqual(stats["widened"], 0)
+        self.assertEqual(self._rows("SELECT COUNT(*) FROM call_snapshot")[0][0], after_first)
 
     def test_compacted_day_is_refused(self):
         # Once a day lives in parquet its rows are gone from SQLite, so

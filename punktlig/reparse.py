@@ -96,8 +96,48 @@ def reparse_sx(conn, raw_dir, days, dry_run=False):
     return added
 
 
+def _widen_poll(conn, polled_at, poll_dataset, calls):
+    """Add journeys a narrower mode filter had thrown away to an existing poll.
+
+    The raw files always held the whole feed. When the mode filter widens,
+    the missing journeys are already on disk, and they belong to the poll
+    that is already stored rather than to a new one. Only journeys not
+    already present are inserted, so this can be run again safely.
+    """
+    row = conn.execute(
+        "SELECT poll_id FROM poll WHERE feed = 'et' AND dataset IS ? "
+        "AND polled_at BETWEEN ? AND ? ORDER BY polled_at LIMIT 1",
+        (poll_dataset,
+         (polled_at - MATCH_WINDOW).isoformat(),
+         (polled_at + MATCH_WINDOW).isoformat()),
+    ).fetchone()
+    if not row:
+        return 0
+    poll_id = row[0]
+
+    present = {
+        r[0] for r in conn.execute(
+            "SELECT DISTINCT journey_ref FROM call_snapshot WHERE poll_id = ?", (poll_id,)
+        )
+    }
+    fresh = [c for c in calls if c["journey_ref"] not in present]
+    if not fresh:
+        return 0
+
+    db.insert_calls(conn, [dict(c, poll_id=poll_id) for c in fresh])
+    conn.execute(
+        "UPDATE poll SET n_calls = COALESCE(n_calls, 0) + ?, "
+        "n_journeys = COALESCE(n_journeys, 0) + ?, "
+        "n_dropped = MAX(COALESCE(n_dropped, 0) - ?, 0) WHERE poll_id = ?",
+        (len(fresh), len({c["journey_ref"] for c in fresh}),
+         len({c["journey_ref"] for c in fresh}), poll_id),
+    )
+    conn.commit()
+    return len(fresh)
+
+
 def reparse(db_path=DB_PATH, raw_dir=RAW_DIR, days=None, dataset=DATASET,
-            parquet_dir=PARQUET_DIR, dry_run=False):
+            parquet_dir=PARQUET_DIR, dry_run=False, widen=False):
     """Parse raw ET and SX files back into the archive. Returns a stats dict."""
     et_dir = Path(raw_dir) / "et"
     if not et_dir.is_dir():
@@ -124,7 +164,8 @@ def reparse(db_path=DB_PATH, raw_dir=RAW_DIR, days=None, dataset=DATASET,
         for value in known.values():
             value.sort()
 
-        stats = {"polls": 0, "calls": 0, "skipped": 0, "refused": [], "situations": 0}
+        stats = {"polls": 0, "calls": 0, "skipped": 0, "refused": [],
+                 "situations": 0, "widened": 0}
         stats["situations"] = reparse_sx(conn, raw_dir, days, dry_run=dry_run)
         for day in days:
             day_dir = et_dir / day
@@ -138,7 +179,8 @@ def reparse(db_path=DB_PATH, raw_dir=RAW_DIR, days=None, dataset=DATASET,
             for stamp, file_dataset, paths in _poll_groups(day_dir):
                 polled_at = _stamp_to_time(day, stamp)
                 seen = known.get(file_dataset or dataset, [])
-                if any(abs(polled_at - t) <= MATCH_WINDOW for t in seen):
+                already = any(abs(polled_at - t) <= MATCH_WINDOW for t in seen)
+                if already and not widen:
                     stats["skipped"] += 1
                     continue
 
@@ -152,6 +194,19 @@ def reparse(db_path=DB_PATH, raw_dir=RAW_DIR, days=None, dataset=DATASET,
                         journeys += 1
                         meta = {k: v for k, v in journey.items() if k != "calls"}
                         calls.extend({**meta, **call} for call in journey["calls"])
+
+                if already:
+                    added = 0 if dry_run else _widen_poll(
+                        conn, polled_at, file_dataset or dataset, calls
+                    )
+                    if dry_run:
+                        added = len(calls)
+                    if added:
+                        stats["widened"] += 1
+                        stats["calls"] += added
+                    else:
+                        stats["skipped"] += 1
+                    continue
 
                 if dry_run:
                     stats["polls"] += 1
@@ -185,13 +240,17 @@ def main(argv=None):
                         help="operating day to reparse (repeatable); default all")
     parser.add_argument("--dry-run", action="store_true",
                         help="report what would be inserted, write nothing")
+    parser.add_argument("--widen", action="store_true",
+                        help="add journeys a narrower mode filter had dropped to "
+                             "polls that are already stored")
     args = parser.parse_args(argv)
 
-    stats = reparse(days=args.days, dry_run=args.dry_run)
+    stats = reparse(days=args.days, dry_run=args.dry_run, widen=args.widen)
     verb = "would recover" if args.dry_run else "recovered"
     _log(
         f"{verb} {stats['polls']} polls, {stats['calls']} calls, "
-        f"{stats['situations']} situations ({stats['skipped']} already present)"
+        f"{stats['situations']} situations "
+        f"({stats['widened']} polls widened, {stats['skipped']} already present)"
     )
     return 0
 
