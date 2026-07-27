@@ -43,14 +43,26 @@ def latest_poll(conn, dataset=None):
     return conn.execute(sql + " ORDER BY polled_at DESC LIMIT 1", params).fetchone()
 
 
-def upcoming_rows(archive_path=DB_PATH, parquet_dir=PARQUET_DIR, dataset=None):
-    """Feature rows for every stop still ahead of every running vehicle."""
+def upcoming_rows(archive_path=DB_PATH, parquet_dir=PARQUET_DIR, dataset=None,
+                  datasets=None):
+    """Feature rows for every stop still ahead of every running vehicle.
+
+    `datasets` asks for several codespaces at once, which matters because the
+    history indexes are built from the whole archive: doing that once for five
+    codespaces rather than five times is the difference between a gigabyte and
+    a wedged machine.
+    """
+    wanted = list(datasets) if datasets else [dataset]
     conn = db.connect(archive_path)
     try:
-        newest = latest_poll(conn, dataset)
-        if not newest:
+        poll_ids = []
+        for name in wanted:
+            newest = latest_poll(conn, name)
+            if newest:
+                poll_ids.append(newest[0])
+        if not poll_ids:
             return []
-        poll_id = newest[0]
+        marks = ", ".join("?" for _ in poll_ids)
         cursor = conn.execute(
             "SELECT c.journey_ref, c.operating_date, c.poll_id, p.polled_at, "
             "       c.line_ref, c.direction, c.call_type, c.stop_ref, c.stop_name, "
@@ -58,9 +70,10 @@ def upcoming_rows(archive_path=DB_PATH, parquet_dir=PARQUET_DIR, dataset=None):
             "       c.aimed_dep, c.expected_dep, c.actual_dep, "
             "       c.cancelled, c.call_cancelled, c.recorded_at "
             "FROM call_snapshot c JOIN poll p ON p.poll_id = c.poll_id "
-            "WHERE c.poll_id = ? AND c.journey_ref IS NOT NULL AND c.order_no IS NOT NULL "
+            f"WHERE c.poll_id IN ({marks}) "
+            "AND c.journey_ref IS NOT NULL AND c.order_no IS NOT NULL "
             "ORDER BY c.journey_ref, c.operating_date, p.polled_at, c.poll_id, c.order_no",
-            (poll_id,),
+            poll_ids,
         ).fetchall()
     finally:
         conn.close()

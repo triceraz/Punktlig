@@ -65,6 +65,18 @@ CREATE INDEX IF NOT EXISTS idx_call_journey
 CREATE INDEX IF NOT EXISTS idx_call_poll
   ON call_snapshot (poll_id);
 
+-- Positions for the stop references the feed uses. Fetched once from
+-- JourneyPlanner so the network can be drawn from our own archive.
+CREATE TABLE IF NOT EXISTS quay (
+  quay_ref        TEXT PRIMARY KEY,
+  name            TEXT,
+  lat             REAL,
+  lon             REAL,
+  stop_place_ref  TEXT,
+  stop_place_name TEXT,
+  fetched_at      TEXT
+);
+
 -- One row per (SX snapshot, situation, affected line). A situation with no
 -- line reference is network-wide and stored once with a NULL line_ref.
 CREATE TABLE IF NOT EXISTS situation (
