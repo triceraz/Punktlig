@@ -49,9 +49,11 @@ FEATURES = NUMERIC + CATEGORICAL
 
 PARAMS = {
     "objective": "l1",  # optimises MAE directly, robust to delay outliers
-    "learning_rate": 0.05,
+    # Measured on a frozen dataset against 0.05/50: slower learning with
+    # larger leaves wins once the archive passes a million rows.
+    "learning_rate": 0.02,
     "num_leaves": 63,
-    "min_data_in_leaf": 50,
+    "min_data_in_leaf": 200,
     "verbosity": -1,
     "seed": 7,
 }
@@ -151,7 +153,15 @@ def main(argv=None):
     parser.add_argument("--with-entur", action="store_true",
                         help="blending variant: add Entur's own prediction as a "
                              "feature; the default model stays independent of it")
+    parser.add_argument("--alpha", type=float,
+                        help="fit this quantile of the delay instead of its median. "
+                             "Above 0.5 the model leans towards announcing a later "
+                             "arrival, which is the failure passengers mind least")
     args = parser.parse_args(argv)
+
+    if args.alpha is not None:
+        PARAMS.update(objective="quantile", alpha=args.alpha)
+        print(f"objective: quantile at alpha {args.alpha:g}")
 
     if args.include_parked:
         NUMERIC.extend(PARKED)

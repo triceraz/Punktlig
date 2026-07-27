@@ -52,6 +52,9 @@ python3 -m venv .venv
 
 # train LightGBM and compare it against the baselines on a time-based split
 .venv/bin/python -m punktlig.train
+
+# fit arrival intervals (10th, 50th and 90th percentile) and check coverage
+.venv/bin/python -m punktlig.quantiles
 ```
 
 Raw responses are archived before anything is written to the database, so a failed write is recoverable:
@@ -112,11 +115,11 @@ Validation MAE in seconds on a day split: trained on 2026-07-25 and 2026-07-26, 
 
 | Horizon | n | Timetable | Naive | Entur | Model | Model with Entur as input |
 |---|---|---|---|---|---|---|
-| 0-5 min | 39 570 | 77.4 | 32.0 | 31.7 | 23.1 | 21.6 |
-| 5-10 min | 34 882 | 79.5 | 42.0 | 44.5 | 32.3 | 31.1 |
-| 10-20 min | 50 671 | 83.3 | 53.0 | 56.8 | 43.6 | 42.5 |
-| 20-45 min | 42 260 | 88.8 | 68.9 | 73.3 | 58.9 | 58.0 |
-| Weighted | 167 383 | 82.3 | 50.3 | 52.5 | 40.3 | 39.1 |
+| 0-5 min | 39 570 | 77.4 | 32.0 | 31.7 | 22.8 | 21.6 |
+| 5-10 min | 34 882 | 79.5 | 42.0 | 44.5 | 32.1 | 31.1 |
+| 10-20 min | 50 671 | 83.3 | 53.0 | 56.8 | 43.4 | 42.5 |
+| 20-45 min | 42 260 | 88.8 | 68.9 | 73.3 | 59.0 | 58.0 |
+| Weighted | 167 383 | 82.3 | 50.3 | 52.5 | 40.1 | 39.1 |
 
 The model beats Entur on every horizon, by 23 percent weighted, and the margin holds through rush hour. Two days of training data is still a small archive, and these numbers will move as it grows.
 
@@ -133,7 +136,51 @@ Mean absolute error hides the direction of a miss, and the two directions are no
 | Model | -16.8 | -5.6 | 15.2 % | 55.1 % | 29.6 % |
 | Model with Entur as input | -13.9 | -3.7 | 16.0 % | 56.4 % | 27.6 % |
 
-Entur is the best calibrated of the four: its median error is exactly zero and its bias is only four seconds. There is no sign of a deliberate lean towards promising a later arrival than expected. Our model is more often on time (55 against 45 percent) but leans optimistic, which is what an L1 objective does on a right-skewed delay distribution: it fits the conditional median, and the long tail of large delays sits above it. Quantile models are the direct lever on this, and they are next.
+Entur is the best calibrated of the four: its median error is exactly zero and its bias is only four seconds. There is no sign of a deliberate lean towards promising a later arrival than expected. Our model is more often on time (55 against 45 percent) but leans optimistic, which is what an L1 objective does on a right-skewed delay distribution: it fits the conditional median, and the long tail of large delays sits above it.
+
+That lean is adjustable. Fitting a quantile above the median shifts every prediction later on purpose, and `--alpha` does exactly that:
+
+| Objective | MAE | Bias | Came early | On time | Came late |
+|---|---|---|---|---|---|
+| Entur | 52.46 | -4.3 | 25.9 % | 45.0 % | 29.1 % |
+| L1, the median | 40.10 | -15.4 | 15.7 % | 55.5 % | 28.7 % |
+| Quantile 0.55 | 39.75 | -9.9 | 19.1 % | 55.2 % | 25.8 % |
+| Quantile 0.60 | 39.92 | -3.6 | 23.2 % | 54.2 % | 22.6 % |
+| Quantile 0.65 | 40.55 | 1.8 | 26.9 % | 52.9 % | 20.2 % |
+| Quantile 0.70 | 42.83 | 10.1 | 33.4 % | 49.5 % | 17.1 % |
+
+Quantile 0.6 cuts the countdown-lied failures by a fifth, from 28.7 to 22.6 percent, for no meaningful cost in mean error. That looks free, and it partly is, but one caveat is load bearing: training runs on a weekend and validation on a Monday, so validation delays are larger than training delays and a small upward shift flatters itself. The trade needs re-measuring once training and validation days are comparable. The default stays on the median, which is the honest MAE-optimal claim.
+
+## Uncertainty
+
+`python3 -m punktlig.quantiles` fits the 10th, 50th and 90th percentile of the delay, which turns a point estimate into an arrival window. Entur publishes no uncertainty at all, so this is a capability the official feed lacks rather than a sharper version of one it has.
+
+| Horizon | n | Coverage | Target | Interval width |
+|---|---|---|---|---|
+| 0-5 min | 39 570 | 81.3 % | 80 % | 72.9 s |
+| 5-10 min | 34 882 | 76.4 % | 80 % | 93.1 s |
+| 10-20 min | 50 671 | 76.4 % | 80 % | 125.8 s |
+| 20-45 min | 42 260 | 75.8 % | 80 % | 167.5 s |
+
+Overall coverage is 77.4 percent against the 80 percent the interval claims, so the bands are slightly too narrow, and honestly labelled as such. Width grows with the horizon, which is the expected shape: the further ahead the question, the less anyone can know.
+
+## Tuning
+
+Every parameter change was measured on one frozen dataset, one change at a time, against the same validation day.
+
+| Change | Weighted MAE | Verdict |
+|---|---|---|
+| Starting point: 63 leaves, learning rate 0.05, min 50 rows per leaf | 40.25 | |
+| 127 leaves | 40.35 | rejected |
+| 255 leaves | 40.38 | rejected |
+| Feature and row sampling at 0.8 | 40.52 | rejected |
+| L2 penalty 5 | 40.33 | rejected |
+| Min 200 rows per leaf | 40.19 | kept |
+| Learning rate 0.03 | 40.13 | kept |
+| Learning rate 0.02 with min 200 rows per leaf | 40.10 | adopted |
+| Predicting the change in delay instead of the delay | 40.05 | not adopted: the weighted gain is inside the noise and it doubles training time, though it clearly wins the 0-5 minute bucket (22.2 against 22.8) and deserves a second look as a per-horizon variant |
+
+Capacity increases all made it worse, which is the expected shape for two days of data: the limit is the archive, not the model.
 
 ## Ablations
 
@@ -177,7 +224,8 @@ All of this is measured on one Sunday with one Saturday of training data, so tre
 - [x] Dataset builder: replay the archive into training rows without lookahead
 - [x] Storage tiering: verified parquet compaction, raw retention, mixed-source replay
 - [x] Training pipeline: LightGBM vs. all baselines on a time-based split
-- [ ] Real results on weeks of data: ablations, learning curve, quantile intervals
+- [x] Quantile intervals with a coverage check
+- [ ] Real results on weeks of data: ablations, learning curve, per-line error analysis
 - [ ] Backtest dashboard: error per horizon vs. Entur
 - [ ] Serverless collection (Vercel function + external cron + hosted libSQL)
 - [ ] Live site: realtime map, model vs. Entur per stop, uncertainty bands
