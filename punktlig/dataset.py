@@ -30,6 +30,11 @@ RECENT_WINDOW = timedelta(minutes=30)
 # a path sum over one-off runtimes is noise, not history.
 SLACK_MIN_OBS = 3
 
+# History is counted into buckets of this length rather than stored per
+# observation, which is what keeps memory tied to how long the archive spans
+# instead of to how much traffic it saw. Features are as fresh as one bucket.
+BUCKET_SECONDS = 900
+
 # The replay reads the same 18 columns in the same order regardless of where
 # the rows live (hot SQLite, compacted Parquet, or both).
 CALL_COLS = (
@@ -128,26 +133,42 @@ class WeatherIndex:
 
 
 class HistoryIndex:
-    """As-of-T history from a pre-pass over the same call cursor the replay uses.
+    """As-of-T history, aggregated into time buckets so it fits in memory.
 
-    Two lookups share one scan:
+    Two lookups share one scan of the archive:
       - typical(): mean observed runtime per (line, direction, from_stop,
-        to_stop) segment, for the slack feature
-      - last_pass(): the latest known passing of a stop by another vehicle on
-        the same line, for the bunching features
+        to_stop) segment, for the schedule slack feature
+      - stop_recent() and line_recent(): recent delay level around a stop and
+        along a line, for the network features
 
-    An observation becomes visible at the poll where its actual times first
-    appeared, and lookups only see observations at or before T, so this
-    history obeys the same no-lookahead rule as the weather join. Typical
-    runtime is the running mean (prefix sums give O(1) as-of-T lookups; a
-    median would cost a sort per lookup at replay scale).
+    Observations are counted into buckets rather than stored individually.
+    That is what makes the replay survive a growing archive: memory then
+    depends on how many stops and segments exist times how many buckets the
+    archive spans, not on how many vehicles have driven through them. Keeping
+    every observation costs about a gigabyte per four million archived calls,
+    which stops working within days once a whole city is collected.
+
+    Only buckets that closed strictly before T are visible, so the
+    no-lookahead rule survives the change and in fact tightens: a bucket
+    still filling could contain observations from after T, so it is never
+    read. Features are therefore as fresh as the bucket size, and that is the
+    honest cost of the trade.
     """
 
-    def __init__(self, call_rows):
+    def __init__(self, call_rows, bucket_seconds=BUCKET_SECONDS, keep_passes=False):
+        self.bucket = bucket_seconds
+        self.keep_passes = keep_passes
         first_known = {}  # order -> (from_actual, to_actual, seen_at, stop_ref)
-        raw = defaultdict(list)
-        raw_passes = defaultdict(list)  # (line, dir, stop) -> (seen_at, actual, delay, journey)
+        segments = defaultdict(dict)   # seg -> bucket -> [count, sum]
+        stop_delays = defaultdict(dict)
+        line_delays = defaultdict(dict)
+        raw_passes = defaultdict(list) if keep_passes else None
         current_key = None
+
+        def add(store, key, seen_at, value):
+            slot = store[key].setdefault(self._bucket_of(seen_at), [0, 0.0])
+            slot[0] += 1
+            slot[1] += value
 
         def flush(journey_line_dir):
             for o in sorted(first_known):
@@ -158,9 +179,8 @@ class HistoryIndex:
                 _, to_actual, seen_to, stop_to = nxt
                 runtime = _secs(to_actual, from_actual)
                 if runtime is not None and runtime > 0:
-                    raw[journey_line_dir + (stop_from, stop_to)].append(
-                        (max(seen_from, seen_to), runtime)
-                    )
+                    add(segments, journey_line_dir + (stop_from, stop_to),
+                        max(seen_from, seen_to), runtime)
 
         for r in call_rows:
             if r[16]:  # cancelled journey: its runtimes are not typical
@@ -180,80 +200,73 @@ class HistoryIndex:
                     aimed = _ts(r[10]) or _ts(r[13])
                     delay = _secs(to_actual or from_actual, aimed)
                     if delay is not None:
-                        raw_passes[(r[4], r[5], r[7])].append(
-                            (seen_at, to_actual or from_actual, delay, r[0])
-                        )
+                        add(stop_delays, r[7], seen_at, delay)
+                        add(line_delays, line_dir, seen_at, delay)
+                        if keep_passes:
+                            raw_passes[(r[4], r[5], r[7])].append(
+                                (seen_at, to_actual or from_actual, delay, r[0])
+                            )
         if current_key is not None:
             flush(line_dir)
 
-        # Parallel arrays per segment: observation times for bisect, prefix
-        # sums for O(1) running means.
-        self.segments = {}
-        for seg, obs in raw.items():
-            obs.sort()
-            times = [t for t, _ in obs]
-            sums = [0.0]
-            for _, rt in obs:
-                sums.append(sums[-1] + rt)
-            self.segments[seg] = (times, sums)
+        self.segments = {k: self._prefix(v) for k, v in segments.items()}
+        self.stop_delays = {k: self._prefix(v) for k, v in stop_delays.items()}
+        self.line_delays = {k: self._prefix(v) for k, v in line_delays.items()}
 
         self.passes = {}
-        for key, events in raw_passes.items():
-            events.sort()
-            self.passes[key] = ([e[0] for e in events], events)
+        if keep_passes:
+            for key, events in raw_passes.items():
+                events.sort()
+                self.passes[key] = ([e[0] for e in events], events)
 
-        # Delay-level indexes for the network features: per stop across all
-        # lines, and per (line, direction) across all stops. Prefix sums over
-        # events sorted by observation time give O(1) windowed means.
-        by_stop, by_line = defaultdict(list), defaultdict(list)
-        for (line_ref, direction, stop_ref), events in raw_passes.items():
-            by_stop[stop_ref].extend(events)
-            by_line[(line_ref, direction)].extend(events)
-        self.stop_delays = self._prefix(by_stop)
-        self.line_delays = self._prefix(by_line)
+    def _bucket_of(self, moment):
+        return int(moment.timestamp()) // self.bucket
 
     @staticmethod
-    def _prefix(events_by_key):
-        out = {}
-        for key, events in events_by_key.items():
-            events.sort()
-            sums = [0.0]
-            for e in events:
-                sums.append(sums[-1] + e[2])
-            out[key] = ([e[0] for e in events], sums)
-        return out
+    def _prefix(buckets):
+        """Sorted bucket keys with running count and sum, for O(log n) lookups."""
+        keys = sorted(buckets)
+        counts, sums = [0], [0.0]
+        for key in keys:
+            count, total = buckets[key]
+            counts.append(counts[-1] + count)
+            sums.append(sums[-1] + total)
+        return keys, counts, sums
 
-    @staticmethod
-    def _windowed_mean(entry, at_time, window):
+    def _closed_before(self, entry, at_time, since_bucket=None):
+        """(count, sum) over buckets that closed before T, optionally windowed."""
         if not entry:
-            return None
-        times, sums = entry
-        j = bisect_right(times, at_time)
-        i = bisect_left(times, at_time - window)
-        if j <= i:
-            return None
-        return (sums[j] - sums[i]) / (j - i)
+            return 0, 0.0
+        keys, counts, sums = entry
+        end = bisect_left(keys, self._bucket_of(at_time))
+        start = 0 if since_bucket is None else bisect_left(keys, since_bucket)
+        if end <= start:
+            return 0, 0.0
+        return counts[end] - counts[start], sums[end] - sums[start]
+
+    def _recent(self, entry, at_time, window):
+        since = self._bucket_of(at_time) - max(1, int(window.total_seconds()) // self.bucket)
+        count, total = self._closed_before(entry, at_time, since_bucket=since)
+        return total / count if count else None
 
     def stop_recent(self, at_time, stop_ref, window):
         """Mean delay of passes at the stop, any line, in the window before T."""
-        return self._windowed_mean(self.stop_delays.get(stop_ref), at_time, window)
+        return self._recent(self.stop_delays.get(stop_ref), at_time, window)
 
     def line_recent(self, at_time, line_ref, direction, window):
         """Mean delay of passes on the line, any stop, in the window before T."""
-        return self._windowed_mean(
+        return self._recent(
             self.line_delays.get((line_ref, direction)), at_time, window
         )
 
     def typical(self, at_time, line_ref, direction, stop_from, stop_to):
-        """Mean observed runtime for the segment, over observations known at T."""
-        entry = self.segments.get((line_ref, direction, stop_from, stop_to))
-        if not entry:
+        """Mean observed runtime for the segment, over buckets closed before T."""
+        count, total = self._closed_before(
+            self.segments.get((line_ref, direction, stop_from, stop_to)), at_time
+        )
+        if count < SLACK_MIN_OBS:
             return None
-        times, sums = entry
-        idx = bisect_right(times, at_time)
-        if idx < SLACK_MIN_OBS:
-            return None
-        return sums[idx] / idx
+        return total / count
 
     def last_pass(self, at_time, line_ref, direction, stop_ref, exclude_journey):
         """Latest pass of the stop by another vehicle on the line, known at T.
@@ -402,7 +415,8 @@ def _open_sources(archive_path, parquet_dir, sample=0):
     return weather_rows, call_rows, con.close
 
 
-def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR, sample=0):
+def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR, sample=0,
+          bucket_seconds=BUCKET_SECONDS, with_bunching=False):
     """Replay the archive into training rows.
 
     `sample` keeps that many sixteenths of all journeys. The history indexes
@@ -419,7 +433,11 @@ def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR, samp
     # Pre-pass for the slack and bunching features: the cursors are
     # single-use, so the sources are opened twice, history first, then replay.
     _, history_rows, close_history = _open_sources(archive_path, parquet_dir, sample)
-    history = HistoryIndex(history_rows)
+    # Bunching needs every individual passing rather than bucket totals, which
+    # is the one thing here that grows with traffic. Those features are parked
+    # after measuring as a wash, so the memory is not spent unless asked for.
+    history = HistoryIndex(history_rows, bucket_seconds=bucket_seconds,
+                           keep_passes=with_bunching)
     close_history()
 
     situations = SituationIndex(_situation_rows(archive_path))

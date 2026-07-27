@@ -1,4 +1,4 @@
-"""Replay tests on a synthetic archive.
+﻿"""Replay tests on a synthetic archive.
 
 The scenario: one tram journey observed over three polls.
 
@@ -114,7 +114,7 @@ class DatasetBuildTest(unittest.TestCase):
         seed_archive(archive)
         cls.n_written = build(
             archive_path=archive, out_path=out,
-            parquet_dir=Path(cls.tmp.name) / "no-parquet",
+            parquet_dir=Path(cls.tmp.name) / "no-parquet", bucket_seconds=60,
         )
         conn = db.connect(out)
         cols = [c[1] for c in conn.execute("PRAGMA table_info(training_row)")]
@@ -193,14 +193,16 @@ class DatasetBuildTest(unittest.TestCase):
         self.assertEqual(self._row(2, 3)["obs_age_sec"], 120.0)
         self.assertEqual(self._row(2, 3)["since_last_stop_sec"], -210.0)
 
-    def test_network_state_windowed_means(self):
-        # Known passes: stop 1 at 10:00:30Z (delay 120), stop 2 at 10:02Z
-        # (150), stop 3 at 10:05Z (180). At T=10:00:30 only the first is
-        # known: line mean 120, nothing has passed the target stop yet. At
-        # T=10:02 the line mean is (120+150)/2.
-        self.assertEqual(self._row(1, 2)["line_recent_delay_sec"], 120.0)
+    def test_network_state_reads_only_closed_buckets(self):
+        # History is counted into buckets, and a bucket that is still filling
+        # could hold observations from after T, so only closed ones are read.
+        # With one-minute buckets: the pass at 10:00:30 lands in the 10:00
+        # bucket, which is still open at poll 1 (10:00:30) and closed by poll
+        # 2 (10:02:00). The freshness cost is exactly one bucket.
+        self.assertIsNone(self._row(1, 2)["line_recent_delay_sec"])
+        self.assertEqual(self._row(2, 3)["line_recent_delay_sec"], 120.0)
+        # Nothing has passed the target stops at all, on any line.
         self.assertIsNone(self._row(1, 2)["stop_recent_delay_sec"])
-        self.assertEqual(self._row(2, 3)["line_recent_delay_sec"], 135.0)
         self.assertIsNone(self._row(2, 3)["stop_recent_delay_sec"])
 
     def test_slack_is_null_without_prior_observations(self):
@@ -213,7 +215,7 @@ class DatasetBuildTest(unittest.TestCase):
 
     def test_weather_join_never_uses_future_forecasts(self):
         # At poll 1 (10:00:30Z) the newest forecast for the 10Z hour was issued
-        # 09:59Z (12.0°). The 99.0° snapshot exists but was issued 10:01Z, in
+        # 09:59Z (12.0Â°). The 99.0Â° snapshot exists but was issued 10:01Z, in
         # poll 1's future, and must be invisible to poll 1's rows.
         self.assertEqual(self._row(1, 2)["fc_air_temp"], 12.0)
         # At poll 2 (10:02:00Z) the 10:01Z snapshot IS the newest known one.
@@ -288,7 +290,7 @@ class SlackFeatureTest(unittest.TestCase):
         seed_archive(archive)
         seed_second_journey(archive)
         build(archive_path=archive, out_path=out,
-              parquet_dir=Path(tmp.name) / "no-parquet")
+              parquet_dir=Path(tmp.name) / "no-parquet", bucket_seconds=60)
         conn = db.connect(out)
         self.addCleanup(conn.close)
         row = conn.execute(
@@ -303,17 +305,39 @@ class SlackFeatureTest(unittest.TestCase):
         # the segment: slack = 300 - 330 = -30.
         self.assertEqual(row[0], 300.0)
         self.assertEqual(row[1], -30.0)
-        # Bunching: the latest known pass of the target stop at T=10:10Z is
-        # testC (observed 10:08Z, actual 12:18, delay 120 vs aimed 12:16).
-        # test2 expects to arrive 12:26:00: predicted headway 480s.
-        self.assertEqual(row[2], 480.0)
-        self.assertEqual(row[3], 120.0)
-        # Network state at T=10:10Z. Target stop passes: 150 (test1),
-        # 60 (testB), 120 (testC) -> mean 110. Line passes: test1's
-        # 120+150+180, testB's 60+60, testC's 60+120, test2's own 60
-        # -> 810 / 8 = 101.25.
+        # Bunching is off unless asked for: it is the one feature that needs
+        # every individual passing rather than bucket totals.
+        self.assertIsNone(row[2])
+        self.assertIsNone(row[3])
+        # Network state at T=10:10Z, over buckets closed before it. Target
+        # stop: 150 (test1), 60 (testB), 120 (testC) -> mean 110. Line: those
+        # three plus 120 and 180 from test1 and 60 twice from the others, so
+        # 750 over seven. test2's own passing shares T's bucket and is
+        # therefore invisible to it.
         self.assertEqual(row[4], 110.0)
-        self.assertEqual(row[5], 101.25)
+        self.assertAlmostEqual(row[5], 750 / 7)
+
+    def test_bunching_is_available_when_asked_for(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        archive = Path(tmp.name) / "archive.db"
+        out = Path(tmp.name) / "dataset.db"
+        seed_archive(archive)
+        seed_second_journey(archive)
+        build(archive_path=archive, out_path=out,
+              parquet_dir=Path(tmp.name) / "no-parquet", bucket_seconds=60,
+              with_bunching=True)
+        conn = db.connect(out)
+        self.addCleanup(conn.close)
+        row = conn.execute(
+            "SELECT headway_ahead_sec, delay_ahead_sec FROM training_row "
+            "WHERE journey_ref = 'RUT:ServiceJourney:test2' AND order_no = 2"
+        ).fetchone()
+        # The latest known pass of the target stop at T=10:10Z is testC
+        # (observed 10:08Z, actual 12:18, delay 120 against aimed 12:16).
+        # test2 expects 12:26:00, so the predicted headway is 480s.
+        self.assertEqual(row[0], 480.0)
+        self.assertEqual(row[1], 120.0)
 
 
 class SampleTest(unittest.TestCase):
@@ -351,3 +375,4 @@ class SampleTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
