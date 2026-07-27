@@ -202,6 +202,51 @@ Every parameter change was measured on one frozen dataset, one change at a time,
 
 Capacity increases all made it worse, which is the expected shape for two days of data: the limit is the archive, not the model.
 
+### Is a simple model enough?
+
+Beating the official system means little if a linear model on the same features does it too, so here is the whole field on the same validation day:
+
+| Predictor | MAE |
+|---|---|
+| Timetable, pretending every vehicle is on time | 82.51 |
+| Naive, carrying the current delay forward | 49.78 |
+| Entur | 52.46 |
+| Ridge regression on the numeric features | 50.53 |
+| Gradient boosted trees | 40.10 |
+
+The ridge result is the interesting one: a linear model cannot even beat carrying the current delay forward. Whatever structure the trees are finding is not a weighted sum of these features, it is interactions and thresholds, which is the argument for the model class rather than an assumption about it.
+
+### Where the model wins, and where it loses
+
+Averages hide the cases that matter. Broken down by how much delay the vehicle has already accumulated:
+
+| Situation | n | Model | Entur |
+|---|---|---|---|
+| Running on time | 97 322 | 35.3 | 51.7 |
+| 1-3 minutes late | 59 136 | 46.2 | 53.9 |
+| 3-6 minutes late | 9 965 | 47.5 | 50.7 |
+| More than 6 minutes late | 739 | **82.6** | **63.7** |
+
+The advantage comes almost entirely from vehicles that are running normally, and it disappears exactly where a passenger cares most. On the badly delayed vehicles the model is 30 percent worse than the official estimate. Those are 0.4 percent of the rows and the model has barely seen such cases, so it pulls them back towards typical behaviour. It is also the situation where an operator knows things we cannot observe: whether the vehicle is being held, turned short, or taken out of service.
+
+The same shape appears along the journey. With one or two stops behind it the model errs by 48.9 seconds against Entur's 55.4; with more than twenty stops behind it, 30.8 against 46.7. Our features are history, so the model is weakest exactly when there is no history yet.
+
+### How much would more data buy?
+
+Trained on the most recent slice of the archive, validated on the same untouched day:
+
+| Share of training data | Rows | MAE | Better than Entur |
+|---|---|---|---|
+| 10 % | 84 880 | 43.94 | 16.2 % |
+| 25 % | 212 200 | 42.81 | 18.4 % |
+| 50 % | 424 400 | 40.93 | 22.0 % |
+| 75 % | 636 600 | 40.56 | 22.7 % |
+| 100 % | 848 799 | 40.10 | 23.6 % |
+
+The curve is still falling. Doubling the archive from a half to a full share bought 0.83 seconds, while every parameter change tested here bought 0.15 seconds in total. More history is worth roughly five times more than more tuning, which settles where the effort belongs.
+
+One caveat on reading it: the slices come from the same two days, so this measures the value of more rows, not the value of more variety. New days bring weather, incidents and weekday patterns the archive has never seen, and that is a different kind of gain than this curve can show.
+
 ## Ablations
 
 Feature groups are added one at a time and measured on identical data before they are allowed to stay. Numbers are validation MAE in seconds on a day split: trained on 2026-07-25, validated on 2026-07-26 (a Sunday morning, 87 309 rows). Two operating dates is far too little data for firm conclusions; this table exists to keep the method honest from day one.
