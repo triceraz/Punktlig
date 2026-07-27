@@ -54,6 +54,18 @@ python3 -m venv .venv
 .venv/bin/python -m punktlig.train
 ```
 
+Raw responses are archived before anything is written to the database, so a failed write is recoverable:
+
+```bash
+# see what could be rebuilt from the raw files, without writing
+python3 -m punktlig.reparse --dry-run
+
+# rebuild the rows for one day
+python3 -m punktlig.reparse --day 2026-07-27
+```
+
+Reparsing fills holes only. A day already moved to parquet is refused, and a poll close in time to one already in the archive is skipped, so it is safe to rerun.
+
 Completed days are compacted from the hot SQLite database into zstd parquet, which shrinks them by an order of magnitude. The dataset builder reads both tiers transparently, so nothing changes downstream. Exports are verified by row count before any source rows are deleted.
 
 ## Configuration
@@ -81,6 +93,8 @@ The scope is deliberately small to start (Oslo trams and metro). Widening to bus
 | `weather_snapshot` | Hourly forecast snapshots. Forecasts rather than observations, to avoid leakage |
 | `line` | Line to transport mode lookup from JourneyPlanner |
 | `kv` | Collector state (SIRI requestorId, secondary feed timers) |
+
+The collector is built to fail loudly rather than quietly: repeated database errors trigger a reconnect and then a non-zero exit, so a scheduler restarts a clean process instead of leaving one that looks healthy but writes nothing. Response bodies are read under a wall-clock deadline, because a socket timeout only bounds a single read and a trickling response can otherwise hang a poll indefinitely.
 
 Raw gzipped XML responses are also archived under `data/raw/` so the parsed schema can be rebuilt or extended later.
 
