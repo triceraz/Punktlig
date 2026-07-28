@@ -6,9 +6,9 @@
 <title>Punktlig — appen sier «Nå». Vogna er ikke der.</title>
 <style>
   :root {
-    --ink: #f2f5f8;
-    --dim: #7b8698;
-    --faint: #49525f;
+    --ink: #f4f7fa;
+    --dim: #aab4c2;
+    --faint: #6b7686;
     --us: #34d399;
     --them: #ff4d5e;
     --edge: #161c25;
@@ -59,7 +59,20 @@
   .gap b { display: block; margin-top: .45rem; font-size: clamp(1.1rem,2.2vw,1.9rem);
            color: var(--ink); font-weight: 600; letter-spacing: -.02em; }
   h2 { font-size: clamp(1.7rem, 4vw, 3.2rem); margin: 0 0 1.2rem; letter-spacing: -.03em; font-weight: 650; }
-  .lede { color: var(--dim); max-width: 62ch; margin: 2rem 0 0; font-size: 1.08rem; }
+  .lede { color: var(--dim); max-width: 68ch; margin: 2rem 0 0; font-size: 1.16rem; line-height: 1.65; }
+  .punch { font-size: 1.16rem; line-height: 1.65; }
+  .step { font-size: 1.05rem; }
+  table.data { font-size: 1rem; }
+  .findings { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+              gap: 1.6rem; margin-top: 2.5rem; }
+  .finding { border: 1px solid var(--edge); border-radius: 12px; padding: 1.4rem 1.5rem;
+             background: #07090d; }
+  .finding .h { font-size: .72rem; letter-spacing: .18em; text-transform: uppercase;
+                color: var(--faint); }
+  .finding .v { font-size: 1.85rem; font-weight: 650; letter-spacing: -.02em; margin: .5rem 0 .6rem; }
+  .finding p { margin: 0; color: var(--dim); font-size: .95rem; line-height: 1.6; }
+  .finding.bad .v { color: var(--them); }
+  .finding.good .v { color: var(--us); }
 
   .kicker { font-size: .72rem; letter-spacing: .22em; text-transform: uppercase;
             color: var(--faint); margin: 0 0 1.2rem; }
@@ -194,6 +207,46 @@
   </div>
   <p class="punch" id="punch"></p>
   <table class="data" id="table" style="margin-top:3rem"></table>
+</section>
+
+<section class="screen">
+  <h2>Fire funn</h2>
+  <p class="lede" style="margin:0">
+    Det interessante ligger ikke i sluttallet, men i hva som kom fram underveis.
+  </p>
+  <div class="findings">
+    <div class="finding bad">
+      <div class="h">Den dummeste gjetningen</div>
+      <div class="v">78,5 mot 80,4 s</div>
+      <p>Å bare anta at forsinkelsen står stille, uten modell og uten læring, bommer
+         mindre enn den offisielle prognosen. På hele nettet, i hver eneste horisontbøtte.</p>
+    </div>
+    <div class="finding">
+      <div class="h">Lineært holder ikke</div>
+      <div class="v">50,5 mot 40,1 s</div>
+      <p>En ridge-regresjon på de samme featurene klarer ikke engang å slå fremskrivningen.
+         Strukturen i dataene er samspill og terskler, ikke en vektet sum. Derfor trær.</p>
+    </div>
+    <div class="finding bad">
+      <div class="v">82,6 mot 63,7 s</div>
+      <div class="h" style="letter-spacing:.14em">Der vi taper</div>
+      <p>På vogner som allerede er over seks minutter forsinket er modellen 30 prosent
+         dårligere enn Entur. Det er de tilfellene som betyr mest for en passasjer, og
+         det står her fordi det er sant.</p>
+    </div>
+    <div class="finding good">
+      <div class="h">Noe Entur ikke har</div>
+      <div class="v">77 % treff</div>
+      <p>Modellen kan gi et intervall, ikke bare et tall. Når den sier at ankomsten
+         ligger innenfor et bånd, stemmer det 77 prosent av gangene mot 80 lovet.
+         Den offisielle feeden oppgir ingen usikkerhet i det hele tatt.</p>
+    </div>
+  </div>
+  <p class="lede" style="font-size:.95rem">
+    Tallene for ridge, taps-analysen og intervallene er målt på trikk og T-bane, før
+    innsamlingen ble utvidet til hele nettet. De skal måles på nytt når arkivet er
+    bredt nok, og det står her framfor å bli utelatt.
+  </p>
 </section>
 
 <section class="screen">
