@@ -22,7 +22,7 @@
   }
   /* One column, ordinary scrolling. This is a project page, not a slideshow. */
   .screen {
-    position: relative; max-width: 60rem; margin: 0 auto; padding: 5rem 1.5rem;
+    position: relative; max-width: 72rem; margin: 0 auto; padding: 5.5rem 2rem;
     display: block; text-align: left;
   }
   .screen + .screen { border-top: 1px solid var(--edge); }
@@ -59,7 +59,7 @@
   .gap b { display: block; margin-top: .45rem; font-size: clamp(1.1rem,2.2vw,1.9rem);
            color: var(--ink); font-weight: 600; letter-spacing: -.02em; }
   h2 { font-size: clamp(1.7rem, 4vw, 3.2rem); margin: 0 0 1.2rem; letter-spacing: -.03em; font-weight: 650; }
-  .lede { color: var(--dim); max-width: 54ch; margin: 2.5rem auto 0; font-size: 1.05rem; }
+  .lede { color: var(--dim); max-width: 62ch; margin: 2rem 0 0; font-size: 1.08rem; }
 
   .kicker { font-size: .72rem; letter-spacing: .22em; text-transform: uppercase;
             color: var(--faint); margin: 0 0 1.2rem; }
@@ -78,12 +78,17 @@
   .fact .n { font-size: 1.7rem; font-weight: 650; letter-spacing: -.02em; }
   .fact .l { font-size: .78rem; color: var(--faint); margin-top: .2rem; }
 
-  /* the map: full width, its own band */
-  #mapscreen { position: relative; height: 78vh; min-height: 30rem; padding: 0;
-               border-top: 1px solid var(--edge); border-bottom: 1px solid var(--edge); }
+  /* the map is the first thing you see, with the question written over it */
+  #mapscreen { position: relative; height: 100vh; min-height: 34rem; padding: 0;
+               border-bottom: 1px solid var(--edge); }
   #map { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-  #mapscreen .cap { position: absolute; top: 2.5rem; left: 2.5rem; max-width: 26rem;
-                    text-align: left; z-index: 2; }
+  #mapscreen::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(100deg, rgba(0,0,0,.92) 0%, rgba(0,0,0,.72) 26%, transparent 52%);
+  }
+  #mapscreen .cap { position: absolute; top: 50%; transform: translateY(-50%);
+                    left: 4vw; max-width: 30rem; text-align: left; z-index: 2; }
+  #mapscreen .cap p { color: var(--dim); font-size: .98rem; margin: 1.2rem 0 0; }
   #mapscreen .cap h2 { text-wrap: balance; }
   #mapscreen .cap h2 { margin-bottom: .7rem; }
   #mapscreen .cap p { color: var(--dim); margin: 0; font-size: 1rem; }
@@ -137,16 +142,33 @@
 </head>
 <body>
 
+<section id="mapscreen">
+  <canvas id="map"></canvas>
+  <div class="cap">
+    <p class="kicker">Punktlig · Oslo og Akershus</p>
+    <h1>Kan en modell gjette bedre enn den offisielle sanntidsprognosen?</h1>
+    <p>Hver prikk er en vogn som kjører akkurat nå, farget etter hvor forsinket den er,
+       og den beveger seg mot stoppet den skal til. Linjene ligger der de faktisk går,
+       tegnet av vårt eget arkiv. Klikk på en prikk, rull for å zoome.</p>
+  </div>
+  <div id="vinfo"></div>
+  <div id="chips"></div>
+  <div id="scale">
+    <span class="sw" style="background:#38bdf8"></span>før rutetid
+    <span class="sw" style="background:#e8eef6"></span>i rute
+    <span class="sw" style="background:#fbbf24"></span>1–3 min
+    <span class="sw" style="background:#fb923c"></span>3–6 min
+    <span class="sw" style="background:#ef4444"></span>6+ min
+  </div>
+</section>
+
 <section class="screen">
-  <p class="kicker">Punktlig · Oslo og Akershus</p>
-  <h1>Kan en modell gjette bedre enn den offisielle sanntidsprognosen?</h1>
-  <p class="lede" style="margin:1.2rem 0 0">
+  <p class="lede" style="margin:0">
     Entur publiserer forventet ankomsttid for all kollektivtrafikk i Norge. Prognosen er i
     praksis en fremskriving: forsinkelsen en vogn har nå antas å gjelde ved hvert stopp
     videre. Punktlig arkiverer både prognosen og fasiten, hvert minutt, og trener en modell
-    på arkivet. Under står hva det ble til.
+    på arkivet.
   </p>
-
   <div class="live">
     <div class="live-head">Akkurat nå, samme vogn, samme stopp</div>
     <div class="duo">
@@ -158,8 +180,6 @@
       Om noen minutter passerer den, og fasiten havner rett i arkivet.
       <span id="ctx-src"></span></p>
   </div>
-  <div class="mono" id="clock" hidden></div>
-  <div id="verdict" hidden></div>
 </section>
 
 <section class="screen">
@@ -174,24 +194,6 @@
   </div>
   <p class="punch" id="punch"></p>
   <table class="data" id="table" style="margin-top:3rem"></table>
-</section>
-
-<section id="mapscreen">
-  <canvas id="map"></canvas>
-  <div class="cap">
-    <h2>Nettet akkurat nå</h2>
-    <p>Hver prikk er en vogn i bevegelse, farget etter forsinkelse. Linjene ligger
-       der de faktisk går, tegnet av arkivet vårt. Klikk på en prikk, rull for å zoome.</p>
-  </div>
-  <div id="vinfo"></div>
-  <div id="chips"></div>
-  <div id="scale">
-    <span class="sw" style="background:#38bdf8"></span>før rutetid
-    <span class="sw" style="background:#e8eef6"></span>i rute
-    <span class="sw" style="background:#fbbf24"></span>1–3 min
-    <span class="sw" style="background:#fb923c"></span>3–6 min
-    <span class="sw" style="background:#ef4444"></span>6+ min
-  </div>
 </section>
 
 <section class="screen">
@@ -307,6 +309,7 @@ function drawMap(d) {
   const FRAME = ["metro", "tram"];
   const on = new Set(modes.filter(m => m !== "rail"));
   let view = null, hover = null, zoom = 1, panX = 0, panY = 0;
+  const loadedAt = Date.now();
 
   const chips = document.getElementById("chips");
   modes.forEach(m => {
@@ -393,12 +396,22 @@ function drawMap(d) {
       ctx.fillText(r.line, bx, by + .5);
     }
 
-    // A dot with no line under it reads as noise, so vehicles follow the same
-    // filter as the routes they run on.
+    // Vehicles keep moving between exports: each one knows the stop it is
+    // heading for and how long it has, so the browser walks it along instead
+    // of letting it sit still until the next file arrives. A dot with no line
+    // under it reads as noise, so they follow the same filter as the routes.
+    const age = (Date.now() - loadedAt) / 1000;
     const pulse = .5 + .5 * Math.sin(t / 850);
     for (const v of vehicles) {
       if (!on.has(v.mode)) continue;
-      const x = view.x(v.lon), y = view.y(v.lat), c = delayColour(v.now);
+      let lon = v.lon, lat = v.lat;
+      if (v.tlon !== undefined && v.eta > 0) {
+        const k = Math.min(1, age / v.eta);
+        lon += (v.tlon - v.lon) * k;
+        lat += (v.tlat - v.lat) * k;
+      }
+      v._x = lon; v._y = lat;
+      const x = view.x(lon), y = view.y(lat), c = delayColour(v.now);
       if (x < -20 || y < -20 || x > view.w + 20 || y > view.h + 20) continue;
       const r = v === hover ? 6 : 2.9;
       ctx.beginPath(); ctx.arc(x, y, r + 4 + pulse * 1.6, 0, 6.284);
@@ -413,7 +426,8 @@ function drawMap(d) {
     let best = null, bd = 400;
     for (const v of vehicles) {
       if (!on.has(v.mode)) continue;
-      const dx = view.x(v.lon) - px, dy = view.y(v.lat) - py, dist = dx * dx + dy * dy;
+      const dx = view.x(v._x ?? v.lon) - px, dy = view.y(v._y ?? v.lat) - py;
+      const dist = dx * dx + dy * dy;
       if (dist < bd) { bd = dist; best = v; }
     }
     return best;

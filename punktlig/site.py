@@ -206,8 +206,14 @@ def vehicles(conn, rows, now=None):
         if not _inside(target[1], target[0]):
             continue
         out.append({
+            # Where it is now, where it is heading, and how long it has to get
+            # there, so the page can keep moving it between exports instead of
+            # jumping once a minute.
             "lon": round(source[0] + (target[0] - source[0]) * fraction, 5),
             "lat": round(source[1] + (target[1] - source[1]) * fraction, 5),
+            "tlon": round(target[0], 5),
+            "tlat": round(target[1], 5),
+            "eta": round(row["horizon_sec"]),
             "line": (row["line_ref"] or "").split(":")[-1],
             "mode": modes.get(row["line_ref"], "bus"),
             "stop": row["stop_name"],
