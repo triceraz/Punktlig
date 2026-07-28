@@ -111,10 +111,16 @@
           border-radius: 999px; padding: .35rem .85rem; font-size: .8rem; cursor: pointer;
           backdrop-filter: blur(10px); }
   .chip.on { color: #000; background: var(--ink); border-color: var(--ink); font-weight: 600; }
+  #zoombox { position: absolute; right: 2.5rem; top: 2.5rem; z-index: 3;
+             display: grid; gap: .4rem; }
+  .zb { width: 2.2rem; height: 2.2rem; border-radius: 8px; cursor: pointer;
+        border: 1px solid var(--edge); background: rgba(8,11,16,.85); color: var(--ink);
+        font-size: 1rem; line-height: 1; backdrop-filter: blur(10px); }
+  .zb:hover { background: #131a24; }
   #scale { position: absolute; right: 2.5rem; bottom: 2rem; z-index: 2; display: flex;
            align-items: center; gap: .45rem; font-size: .75rem; color: var(--faint); }
   .sw { width: .8rem; height: .8rem; border-radius: 50%; }
-  #vinfo { position: absolute; right: 2.5rem; top: 2.5rem; width: min(19rem, 82vw); z-index: 2;
+  #vinfo { position: absolute; right: 6rem; top: 2.5rem; width: min(19rem, 82vw); z-index: 2;
            background: rgba(8,11,16,.9); border: 1px solid var(--edge); border-radius: 14px;
            padding: 1rem 1.15rem; backdrop-filter: blur(14px); text-align: left; display: none; }
   #vinfo.on { display: block; }
@@ -162,10 +168,15 @@
     <h1>Kan en modell gjette bedre enn den offisielle sanntidsprognosen?</h1>
     <p>Hver prikk er en vogn som kjører akkurat nå, farget etter hvor forsinket den er,
        og den beveger seg mot stoppet den skal til. Linjene ligger der de faktisk går,
-       tegnet av vårt eget arkiv. Klikk på en prikk, rull for å zoome.</p>
+       tegnet av vårt eget arkiv. Klikk på en prikk, dra for å flytte kartet.</p>
   </div>
   <div id="vinfo"></div>
   <div id="chips"></div>
+  <div id="zoombox">
+    <button class="zb in" title="Zoom inn">+</button>
+    <button class="zb out" title="Zoom ut">−</button>
+    <button class="zb reset" title="Tilbake til hele nettet">◻</button>
+  </div>
   <div id="scale">
     <span class="sw" style="background:#38bdf8"></span>før rutetid
     <span class="sw" style="background:#e8eef6"></span>i rute
@@ -508,18 +519,27 @@ function drawMap(d) {
         tr.append(el("td", "", p[0]), el("td", "", p[1])); table.append(tr); });
     box.append(table);
   };
-  // Wheel to zoom around the pointer, drag to pan. Every map people call a map
-  // does this, and a fixed frame reads as a picture instead.
-  canvas.addEventListener("wheel", ev => {
-    ev.preventDefault();
-    const r = canvas.getBoundingClientRect();
-    const cx = ev.clientX - r.left, cy = ev.clientY - r.top;
-    const k = Math.exp(-ev.deltaY * .0016);
+  // The wheel belongs to the page. A full-height map that swallows scrolling
+  // traps the reader on the first screen, so zooming lives on the buttons and
+  // on ctrl-wheel, the way map embeds have done it for years.
+  function zoomBy(k, cx, cy) {
     const next = Math.max(1, Math.min(14, zoom * k));
     const f = next / zoom;
+    if (cx === undefined) { cx = canvas.clientWidth / 2; cy = canvas.clientHeight / 2; }
     panX = cx - (cx - panX) * f; panY = cy - (cy - panY) * f;
     zoom = next;
+  }
+  canvas.addEventListener("wheel", ev => {
+    if (!ev.ctrlKey && !ev.metaKey) return;  // let the page scroll
+    ev.preventDefault();
+    const r = canvas.getBoundingClientRect();
+    zoomBy(Math.exp(-ev.deltaY * .0016), ev.clientX - r.left, ev.clientY - r.top);
   }, { passive: false });
+
+  const zoomBox = document.getElementById("zoombox");
+  zoomBox.querySelector(".in").onclick = () => zoomBy(1.5);
+  zoomBox.querySelector(".out").onclick = () => zoomBy(1 / 1.5);
+  zoomBox.querySelector(".reset").onclick = () => { zoom = 1; panX = 0; panY = 0; };
 
   let drag = null;
   canvas.addEventListener("mousedown", ev => { drag = { x: ev.clientX, y: ev.clientY }; });
