@@ -151,8 +151,15 @@ def load_matrix(dataset_path, valid_days, valid_on=None):
         X = np.full((n, len(FEATURES)), np.nan, dtype=np.float32)
         y = np.empty(n, dtype=np.float32)
         entur = np.empty(n, dtype=np.float32)
+        # The codespace each row came from, carried alongside so the result
+        # can be broken down by source without a second pass over the data.
+        # It is read as its own column rather than recovered from the line_ref
+        # vocabulary, whose indices say nothing about which operator a line
+        # belongs to.
+        sources = np.empty(n, dtype=object)
         cursor = conn.execute(f"""
-            SELECT {', '.join(FEATURES)}, label_delay_sec, entur_pred_delay_sec
+            SELECT {', '.join(FEATURES)}, label_delay_sec, entur_pred_delay_sec,
+                   substr(line_ref, 1, instr(line_ref, ':') - 1)
             FROM training_row
             WHERE {ROW_FILTER}
             ORDER BY {is_valid}, polled_at
@@ -169,10 +176,11 @@ def load_matrix(dataset_path, valid_days, valid_on=None):
                         X[i, j] = row[j]
                 for j, col in enumerate(CATEGORICAL):
                     X[i, n_numeric + j] = vocabs[col].get(row[n_numeric + j], 0)
-                y[i] = row[-2]
-                entur[i] = row[-1]
+                y[i] = row[-3]
+                entur[i] = row[-2]
+                sources[i] = row[-1] or "?"
                 i += 1
-        return X, y, entur, split, vocabs, valid_dates, n
+        return X, y, entur, split, vocabs, valid_dates, n, sources
     finally:
         conn.close()
 
@@ -247,6 +255,49 @@ def evaluate(X, split, y, entur, pred):
     return summary
 
 
+TRAIN_CODESPACES = {"VYG", "GOA", "SJN", "FLT"}
+SOURCE_NAMES = {"RUT": "Ruter", "VYG": "Vy", "GOA": "Go-Ahead",
+                "FLT": "Flytoget", "SJN": "SJ"}
+
+
+def by_source(y, entur, pred, current, sources, split):
+    """The same comparison, split by which operator's stream the row came from.
+
+    Trains are a small share of the rows and are polled a fifth as often, so
+    they can move the weighted figure hardly at all while behaving quite
+    differently underneath it. Reporting the split is the difference between
+    knowing that and guessing at it.
+    """
+    valid = sources[split:]
+    out = {}
+    print(f"\n{'source':>10} | {'n':>8} | {'naive':>9} | {'entur':>9} | {'model':>9}")
+    print("-" * 58)
+    for code in sorted(set(valid), key=lambda c: -(valid == c).sum()):
+        mask = valid == code
+        n = int(mask.sum())
+        if n < 1000:
+            continue
+        stats = {
+            "n": n,
+            "naive": float(mae(list(np.abs(y[split:][mask] - current[split:][mask])))),
+            "entur": float(mae(list(np.abs(y[split:][mask] - entur[split:][mask])))),
+            "model": float(mae(list(np.abs(y[split:][mask] - pred[mask])))),
+        }
+        out[code] = stats
+        label = SOURCE_NAMES.get(code, code)
+        print(f"{label:>10} | {n:>8} | {fmt(stats['naive'])} | "
+              f"{fmt(stats['entur'])} | {fmt(stats['model'])}")
+
+    rail = [c for c in out if c in TRAIN_CODESPACES]
+    if rail and "RUT" in out:
+        total = sum(out[c]["n"] for c in rail)
+        blend = lambda key: sum(out[c][key] * out[c]["n"] for c in rail) / total
+        print(f"\n  trains together: {total} rows, "
+              f"naive {blend('naive'):.1f}s, entur {blend('entur'):.1f}s, "
+              f"model {blend('model'):.1f}s")
+    return out
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Train LightGBM on the replay dataset")
     parser.add_argument("--dataset", default=str(DATASET_PATH))
@@ -294,7 +345,7 @@ def main(argv=None):
         FEATURES[:] = NUMERIC + CATEGORICAL
         print(f"ablation: excluded {', '.join(sorted(dropped))}")
 
-    X, y, entur, split, vocabs, valid_dates, n = load_matrix(
+    X, y, entur, split, vocabs, valid_dates, n, sources = load_matrix(
         args.dataset, args.valid_days, args.valid_date)
     if n < 1000:
         print(f"only {n} usable rows; collect more data before training")
@@ -324,6 +375,8 @@ def main(argv=None):
 
     pred = booster.predict(X[split:], num_iteration=booster.best_iteration)
     summary = evaluate(X, split, y, entur, pred)
+    per_source = by_source(y, entur, pred, X[:, FEATURES.index("current_delay_sec")],
+                           sources, split)
 
     gains = sorted(
         zip(FEATURES, booster.feature_importance("gain")), key=lambda p: -p[1]
@@ -349,6 +402,9 @@ def main(argv=None):
                 # hundred, which is the failure mode of writing a number into
                 # copy and letting the data move underneath it.
                 "operators": operator_rows(args.dataset),
+                # The same comparison per operator, so the trains can be read
+                # separately from the buses they are averaged into.
+                "by_source": per_source,
                 # Share of total gain per feature, so the site can show what
                 # the model actually leans on rather than a hand-written list.
                 "importance": {
