@@ -40,7 +40,7 @@ BARE_TRAIN = """<?xml version="1.0"?>
       <EstimatedCall>
         <StopPointRef>NSR:Quay:201</StopPointRef>
         <Order>2</Order>
-        <StopPointName>Ski stasjon</StopPointName>
+        <StopPointName>Tangen i Sannidal (Bø, Lunde, Drangedal)</StopPointName>
         <AimedArrivalTime>2026-07-28T06:22:00+02:00</AimedArrivalTime>
       </EstimatedCall>
     </EstimatedCalls>
@@ -90,7 +90,7 @@ class RecoverCompactedDayTest(unittest.TestCase):
             "   'estimated', 'NSR:Quay:567', 'Oslo S', 1::BIGINT, NULL, NULL, NULL, "
             "   NULL, NULL, NULL, 0::BIGINT, 0::BIGINT, NULL, NULL, 1::BIGINT), "
             f"  (NULL, NULL, 7::BIGINT, '{self.polled_at}', 'VYG:Line:RE20', NULL, "
-            "   'estimated', 'NSR:Quay:201', 'Ski stasjon', 2::BIGINT, NULL, NULL, NULL, "
+            "   'estimated', 'NSR:Quay:201', 'gammelt navn', 2::BIGINT, NULL, NULL, NULL, "
             "   NULL, NULL, NULL, 0::BIGINT, 0::BIGINT, NULL, NULL, 1::BIGINT)"
             f") AS t({', '.join(recover.CALL_NAMES)})"
         )
@@ -151,6 +151,13 @@ class RecoverCompactedDayTest(unittest.TestCase):
     def test_no_row_is_left_without_identity(self):
         self.run_recovery()
         self.assertTrue(all(row[0] for row in self.rows_now()))
+
+    def test_a_stop_name_containing_commas_survives_the_round_trip(self):
+        # Real names do this: "Tangen i Sannidal (Bø, Lunde, Drangedal)".
+        # Staged through CSV, a guessed dialect split it into extra columns.
+        self.run_recovery()
+        names = [row[2] for row in self.rows_now()]
+        self.assertIn("Tangen i Sannidal (Bø, Lunde, Drangedal)", names)
 
     def test_the_bus_row_survives_untouched(self):
         self.run_recovery()

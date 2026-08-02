@@ -20,6 +20,7 @@ and the original is kept as `.bak` for the caller to remove.
 """
 
 import argparse
+import csv
 import gzip
 import shutil
 import sys
@@ -47,9 +48,9 @@ CALL_COLUMNS = [
 ]
 CALL_NAMES = [name for name, _ in CALL_COLUMNS]
 
-# Rows are handed to the database in blocks rather than one at a time or all
-# at once: a day carries around two million recovered calls.
-BATCH = 50_000
+# An empty CSV field is ambiguous between "no value" and "the empty string",
+# so absent values are written as a token no stop name or timestamp contains.
+NULL_TOKEN = r"\N"
 
 
 def _log(message):
@@ -149,44 +150,55 @@ def rewrite_day(duck, parquet_dir, day, rows, replaced_polls):
         f"SELECT COUNT(*) FROM read_parquet('{path.as_posix()}') WHERE {keep}"
     ).fetchone()[0]
 
-    duck.execute("DROP TABLE IF EXISTS recovered")
-    duck.execute(
-        "CREATE TABLE recovered ("
-        + ", ".join(f"{name} {kind}" for name, kind in CALL_COLUMNS)
-        + ")"
-    )
-    insert = f"INSERT INTO recovered VALUES ({', '.join('?' for _ in CALL_COLUMNS)})"
-    added, batch = 0, []
-    for row in rows:
-        batch.append([_coerce(row.get(name), kind) for name, kind in CALL_COLUMNS])
-        if len(batch) >= BATCH:
-            duck.executemany(insert, batch)
-            added += len(batch)
-            batch = []
-    if batch:
-        duck.executemany(insert, batch)
-        added += len(batch)
+    # Rows go out through a CSV rather than through executemany. Measured on
+    # this archive, parameter binding managed 42 rows a second against 23 000
+    # a second for parsing them, which put a single day at seven hours; the
+    # database's own CSV reader ingests the same rows in seconds.
+    staged = path.with_suffix(".parquet.staging.csv")
+    added = 0
+    with open(staged, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        for row in rows:
+            writer.writerow(
+                [NULL_TOKEN if row.get(name) is None else _coerce(row.get(name), kind)
+                 for name, kind in CALL_COLUMNS]
+            )
+            added += 1
 
     # DuckDB will not bind the destination of a COPY, so the paths go into
     # the statement itself; forward slashes keep Windows separators out of a
     # SQL string literal.
     fresh = path.with_suffix(".parquet.new")
     columns = ", ".join(CALL_NAMES)
-    duck.execute(
-        f"COPY (SELECT {columns} FROM read_parquet('{path.as_posix()}') "
-        f"WHERE {keep} "
-        f"UNION ALL SELECT {columns} FROM recovered) "
-        f"TO '{fresh.as_posix()}' (FORMAT PARQUET, COMPRESSION ZSTD)"
+    spec = ", ".join(f"'{name}': '{kind}'" for name, kind in CALL_COLUMNS)
+    # The dialect is stated rather than sniffed. Left to guess, DuckDB decided
+    # this file had no quote character at all, and the first stop name
+    # containing a comma, "Tangen i Sannidal (Bø, Lunde, Drangedal,
+    # Neslandsvatn)", was split into extra columns.
+    staged_sql = (
+        f"read_csv('{staged.as_posix()}', header=false, "
+        f"columns={{{spec}}}, nullstr='{NULL_TOKEN}', "
+        "delim=',', quote='\"', escape='\"', auto_detect=false)"
     )
-    after = duck.execute("SELECT COUNT(*) FROM read_parquet(?)", [str(fresh)]).fetchone()[0]
-    if after != usable + added:
-        fresh.unlink(missing_ok=True)
-        raise RuntimeError(
-            f"{day}: replacement holds {after} rows, expected {usable + added}"
+    kept = f"SELECT {columns} FROM read_parquet('{path.as_posix()}') WHERE {keep}"
+    source = f"{kept} UNION ALL SELECT {columns} FROM {staged_sql}" if added else kept
+    try:
+        duck.execute(
+            f"COPY ({source}) TO '{fresh.as_posix()}' "
+            "(FORMAT PARQUET, COMPRESSION ZSTD)"
         )
-
-    shutil.move(str(path), str(path) + ".bak")
-    shutil.move(str(fresh), str(path))
+        after = duck.execute(
+            "SELECT COUNT(*) FROM read_parquet(?)", [str(fresh)]
+        ).fetchone()[0]
+        if after != usable + added:
+            fresh.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"{day}: replacement holds {after} rows, expected {usable + added}"
+            )
+        shutil.move(str(path), str(path) + ".bak")
+        shutil.move(str(fresh), str(path))
+    finally:
+        staged.unlink(missing_ok=True)
     return {"before": before, "dropped": before - usable, "added": added, "after": after}
 
 
