@@ -41,7 +41,10 @@ def load_env(path):
     if not path.exists():
         return {}
     found = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    # utf-8-sig, because a file written by PowerShell starts with a byte order
+    # mark and the first key would otherwise be read as "﻿PUNKTLIG_..."
+    # and silently never match. Files without a mark decode identically.
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -68,6 +71,20 @@ def public_url(url, bucket=DEFAULT_BUCKET, name=OBJECT_NAME):
     return f"{url.rstrip('/')}/storage/v1/object/public/{bucket}/{name}"
 
 
+def auth_headers(key):
+    """Authenticate whichever kind of key the project was given.
+
+    Storage parses the bearer token as a JWT, so the legacy service_role key
+    goes there. The newer `sb_secret_` keys are not JWTs and are rejected with
+    "Invalid Compact JWS" if presented that way; they belong in the apikey
+    header instead. Sending the wrong one fails closed rather than silently,
+    which is the only reason this was quick to find.
+    """
+    if key.startswith("sb_"):
+        return {"apikey": key}
+    return {"apikey": key, "Authorization": f"Bearer {key}"}
+
+
 def upload(payload, env=None, opener=None):
     """Overwrite the stored object with this payload. Returns its public URL.
 
@@ -82,7 +99,7 @@ def upload(payload, env=None, opener=None):
         data=body,
         method="POST",
         headers={
-            "Authorization": f"Bearer {key}",
+            **auth_headers(key),
             "Content-Type": "application/json",
             "Cache-Control": f"max-age={CACHE_SECONDS}",
             "x-upsert": "true",

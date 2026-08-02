@@ -45,6 +45,12 @@ class LoadEnvTest(unittest.TestCase):
         self.path.write_text("KEY=ab=cd==\n", encoding="utf-8")
         self.assertEqual(publish.load_env(self.path)["KEY"], "ab=cd==")
 
+    def test_a_byte_order_mark_does_not_hide_the_first_key(self):
+        # PowerShell's Set-Content writes one, and the first name would
+        # otherwise carry an invisible prefix and never match.
+        self.path.write_text("A=1\nB=2\n", encoding="utf-8-sig")
+        self.assertEqual(publish.load_env(self.path), {"A": "1", "B": "2"})
+
 
 class SettingsTest(unittest.TestCase):
     def test_missing_credentials_are_reported_not_guessed(self):

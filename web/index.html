@@ -991,8 +991,31 @@ endrer seg bommer <span class="a">${one(w.naive)}</span>. Mindre enn appen.`);
 
 /* ------------------------------------------------------------------ start */
 
-fetch("data.json?t=" + Date.now(), {cache:"no-store"})
-  .then(r => r.json())
+// The export lives in object storage rather than in the repository. Keeping
+// it in git meant a commit every ten minutes, which grew to three quarters
+// of the project's history and buried every real change. The local copy is
+// still tried afterwards so the page works when served from the machine that
+// produced it, before anything has been published.
+const SOURCES = [
+  "https://zezsdyxlvwhunuvyztec.supabase.co/storage/v1/object/public/punktlig/data.json",
+  "data.json",
+];
+
+async function loadData() {
+  let last;
+  for (const src of SOURCES) {
+    try {
+      const r = await fetch(src + "?t=" + Date.now(), {cache: "no-store"});
+      if (!r.ok) throw new Error(`${r.status} fra ${src}`);
+      return await r.json();
+    } catch (err) {
+      last = err;
+    }
+  }
+  throw last;
+}
+
+loadData()
   .then(d => {
     DATA = d;
     DATA.t0 = new Date(d.generated_at).getTime() / 1000;
