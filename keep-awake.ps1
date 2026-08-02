@@ -12,8 +12,15 @@
 # Match on the command line, not the process name. The collector is itself a
 # long-lived python process, so watching "python" would hold the lock open
 # forever and quietly cancel sleep altogether.
+#
+# The default covers anything run out of the project or a scratch script that
+# names it, and excludes the two things that must not hold the machine awake:
+# the collector, which never stops, and a static file server. Listing module
+# names instead let a repair script fall outside the guard, and the desktop
+# suspended in the middle of a delete.
 param(
-    [string]$Pattern = "punktlig\.(dataset|train|quantiles|report)",
+    [string]$Pattern = "punktlig",
+    [string]$Exclude = "punktlig\.collect|http\.server",
     [int]$GraceSeconds = 90
 )
 
@@ -34,7 +41,8 @@ $stamp = { (Get-Date).ToString("yyyy-MM-dd HH:mm:ss") }
 
 function Running {
     @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -match $Pattern }).Count
+        Where-Object { $_.CommandLine -and $_.CommandLine -match $Pattern -and
+                       $_.CommandLine -notmatch $Exclude }).Count
 }
 
 try {
