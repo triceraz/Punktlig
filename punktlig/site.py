@@ -278,6 +278,9 @@ def score(model_dir):
         # What the model actually leans on, for the site's method page.
         # Older metas predate the field; the page just skips the figure then.
         "importance": meta.get("importance"),
+        # Rows per codespace, so the page can say how the measurement is
+        # composed rather than repeat a ratio somebody typed once.
+        "operators": meta.get("operators"),
     }
 
 

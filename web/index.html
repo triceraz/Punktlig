@@ -445,9 +445,24 @@ Flytoget, SJ og Go-Ahead</span> for togene. <span class="w">Entur</span> er stat
 som distribuerer alle strømmene videre, til appene og til oss.`);
   blank();
   wrap(`Punktlig leser SIRI-ET-strømmen fra Entur hvert minutt, samme kilde som
-appene bruker. Rundt ni av ti målinger i arkivet gjelder Ruters område,
-så på denne siden står det «Ruter» der det strengt tatt er «operatøren,
-distribuert av Entur». Værdata er MET sitt varsel for Oslo.`);
+appene bruker. Værdata er MET sitt varsel for Oslo.`);
+  blank();
+  const ops = DATA.score.operators;
+  if (ops) {
+    const total = Object.values(ops).reduce((a, b) => a + b, 0);
+    const name = {RUT:"Ruter", VYG:"Vy", GOA:"Go-Ahead", FLT:"Flytoget", SJN:"SJ"};
+    table(["kilde", "målinger", "andel"],
+      Object.entries(ops).map(([code, n]) =>
+        [name[code] || code, NB(n), (100 * n / total).toFixed(1).replace(".", ",") + " %"]),
+      ["w", "d", "d"]);
+    blank();
+    wrap(`<span class="d">Fordelingen er lest fra målingen selv. Ruter dominerer så
+kraftig at siden sier «Ruter» og «appen» der det strengt tatt er
+«operatøren, distribuert av Entur».</span>`);
+  } else {
+    wrap(`<span class="d">Ruter står for nesten alle målingene, så siden sier «Ruter»
+og «appen» der det strengt tatt er «operatøren, distribuert av Entur».</span>`);
+  }
   block();
 });
 

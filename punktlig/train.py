@@ -76,6 +76,28 @@ def load_rows(dataset_path):
     return conn.execute(sql).fetchall()
 
 
+def operator_rows(dataset_path):
+    """Usable training rows per codespace, e.g. {"RUT": 20270400, "VYG": ...}.
+
+    The codespace is the prefix of the line reference, which is how Entur
+    names the source of a stream: RUT is Ruter, VYG is Vy, GOA Go-Ahead,
+    FLT Flytoget, SJN SJ.
+    """
+    conn = db.connect(dataset_path)
+    try:
+        return {
+            prefix: count
+            for prefix, count in conn.execute(
+                "SELECT substr(line_ref, 1, instr(line_ref, ':') - 1) AS codespace, "
+                f"COUNT(*) FROM training_row WHERE {ROW_FILTER} "
+                "GROUP BY 1 ORDER BY 2 DESC"
+            )
+            if prefix
+        }
+    finally:
+        conn.close()
+
+
 def load_matrix(dataset_path, valid_days, valid_on=None):
     """Stream the dataset straight into float32 matrices.
 
@@ -321,6 +343,12 @@ def main(argv=None):
                 "features": FEATURES,
                 "vocabs": vocabs,
                 "validation": summary,
+                # How the measurement is composed, so the site can state the
+                # mix instead of asserting a remembered ratio. The page said
+                # "nine in ten" while the real share was ninety-nine in a
+                # hundred, which is the failure mode of writing a number into
+                # copy and letting the data move underneath it.
+                "operators": operator_rows(args.dataset),
                 # Share of total gain per feature, so the site can show what
                 # the model actually leans on rather than a hand-written list.
                 "importance": {
