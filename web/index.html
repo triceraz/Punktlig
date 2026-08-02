@@ -577,7 +577,14 @@ def("kart", "styr kartet: alt, bane, tog, buss, av", (arg) => {
 def("tema", "fosforfarge: grønn, rav, blå, hvit", (arg) => {
   const themes = {"grønn":"", "gronn":"", "rav":"rav", "blå":"blaa", "bla":"blaa", "hvit":"hvit"};
   const key = (arg || "").toLowerCase();
-  if (!(key in themes)) { print(`<span class="err">tema grønn | rav | blå | hvit</span>`); return block(); }
+  if (!(key in themes)) {
+    // Say which word was not understood, the way `kart` does. Answering an
+    // unknown colour with the same line as no argument at all leaves the
+    // reader unsure whether it was rejected or simply ignored.
+    const list = `<span class="d">tema grønn | rav | blå | hvit</span>`;
+    print(arg ? `<span class="err">kjenner ikke «${esc(arg)}».</span> ${list}` : list);
+    return block();
+  }
   themes[key] ? document.documentElement.setAttribute("data-theme", themes[key])
               : document.documentElement.removeAttribute("data-theme");
   print(`<span class="d">tema: ${esc(key)}</span>`);
@@ -742,21 +749,58 @@ function run(raw) {
   c.run(rest.join(" "));
 }
 
+// How far every candidate agrees. A shell fills this in before listing, so
+// "dram" becomes "Drammen" in one keystroke even though two stops match.
+function commonPrefix(words) {
+  if (!words.length) return "";
+  let prefix = words[0];
+  for (const word of words.slice(1)) {
+    let i = 0;
+    while (i < prefix.length && i < word.length &&
+           prefix[i].toLowerCase() === word[i].toLowerCase()) i++;
+    prefix = prefix.slice(0, i);
+  }
+  return prefix;
+}
+
 function complete() {
-  const text = cmd.value, parts = text.split(/\s+/);
+  const parts = cmd.value.split(/\s+/);
   if (parts.length <= 1) {
     const hits = Object.keys(COMMANDS).filter(k => k.startsWith(parts[0].toLowerCase()));
     if (hits.length === 1) cmd.value = hits[0] + (COMMANDS[hits[0]].args ? " " : "");
-    else if (hits.length > 1) { print(`<span class="d">${hits.join("   ")}</span>`); block(); }
+    else if (hits.length > 1) {
+      const shared = commonPrefix(hits);
+      if (shared.length > parts[0].length) cmd.value = shared;
+      print(`<span class="d">${hits.join("   ")}</span>`);
+      block();
+    }
     return;
   }
   const key = ALIAS[parts[0].toLowerCase()] || parts[0].toLowerCase();
   if (key !== "holdeplass") return;
-  const q = parts.slice(1).join(" ").toLowerCase();
+  const typed = parts.slice(1).join(" ");
+  const q = typed.toLowerCase();
   const names = [...new Set(DATA.vehicles.filter(v => v.stop).map(v => v.stop))];
   const hits = names.filter(n => n.toLowerCase().startsWith(q));
-  if (hits.length === 1) cmd.value = "holdeplass " + hits[0];
-  else if (hits.length > 1) { print(`<span class="d">${hits.slice(0, 12).map(esc).join("   ")}</span>`); block(); }
+
+  if (!hits.length) {
+    // Silence reads as a broken key rather than as "no such stop".
+    print(`<span class="d">ingen holdeplass starter med «${esc(typed)}»</span>`);
+    return block();
+  }
+  // An exact hit wins even when longer names extend it: typing the whole name
+  // and pressing tab should accept it, not merely list it again.
+  const exact = hits.find(n => n.toLowerCase() === q);
+  if (hits.length === 1 || exact) {
+    cmd.value = "holdeplass " + (exact || hits[0]);
+    return;
+  }
+  const shared = commonPrefix(hits);
+  if (shared.length > typed.length) cmd.value = "holdeplass " + shared;
+  print(`<span class="d">${hits.slice(0, 12).map(esc).join("   ")}` +
+        (hits.length > 12 ? `<span class="f">   +${hits.length - 12} til</span>` : "") +
+        `</span>`);
+  block();
 }
 
 cmd.addEventListener("keydown", ev => {
