@@ -76,7 +76,7 @@ def load_rows(dataset_path):
     return conn.execute(sql).fetchall()
 
 
-def load_matrix(dataset_path, valid_days):
+def load_matrix(dataset_path, valid_days, valid_on=None):
     """Stream the dataset straight into float32 matrices.
 
     `load_rows` materialises every row as a tuple of Python objects, which
@@ -97,7 +97,18 @@ def load_matrix(dataset_path, valid_days):
         dates = [d for (d,) in conn.execute(
             f"SELECT DISTINCT operating_date FROM training_row WHERE {ROW_FILTER}"
             " ORDER BY 1")]
-        valid_dates = dates[-valid_days:] if len(dates) > valid_days else []
+        if valid_on:
+            # Named days must exist, or the split silently validates on
+            # nothing and every reported number is the training error.
+            missing = [d for d in valid_on if d not in dates]
+            if missing:
+                raise SystemExit(
+                    f"no rows for {', '.join(missing)}; the dataset holds "
+                    f"{', '.join(str(d) for d in dates)}"
+                )
+            valid_dates = list(valid_on)
+        else:
+            valid_dates = dates[-valid_days:] if len(dates) > valid_days else []
         quoted = ", ".join(f"'{d}'" for d in valid_dates) or "''"
         is_valid = f"(operating_date IN ({quoted}))"
 
@@ -220,6 +231,12 @@ def main(argv=None):
     parser.add_argument("--out", default=str(MODEL_DIR))
     parser.add_argument("--valid-days", type=int, default=1,
                         help="validate on the last N operating dates")
+    parser.add_argument("--valid-date", action="append", metavar="YYYY-MM-DD",
+                        help="validate on this operating date instead of the "
+                             "last one. The newest date is often a part-day, "
+                             "which makes for a small and hour-skewed "
+                             "validation set; naming a complete day gives a "
+                             "number worth comparing. Repeatable")
     parser.add_argument("--exclude", default="",
                         help="comma-separated features to drop, for ablation runs "
                              "on identical data (horizon_sec cannot be dropped)")
@@ -255,7 +272,8 @@ def main(argv=None):
         FEATURES[:] = NUMERIC + CATEGORICAL
         print(f"ablation: excluded {', '.join(sorted(dropped))}")
 
-    X, y, entur, split, vocabs, valid_dates, n = load_matrix(args.dataset, args.valid_days)
+    X, y, entur, split, vocabs, valid_dates, n = load_matrix(
+        args.dataset, args.valid_days, args.valid_date)
     if n < 1000:
         print(f"only {n} usable rows; collect more data before training")
         return 1
