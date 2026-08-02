@@ -9,8 +9,11 @@
 # still switch off on their own timer. The request is released the moment the
 # job exits, which is what makes this safe to leave running.
 
+# Match on the command line, not the process name. The collector is itself a
+# long-lived python process, so watching "python" would hold the lock open
+# forever and quietly cancel sleep altogether.
 param(
-    [string]$ProcessName = "python",
+    [string]$Pattern = "punktlig\.(dataset|train|quantiles|report)",
     [int]$GraceSeconds = 90
 )
 
@@ -29,23 +32,27 @@ public static class Awake {
 
 $stamp = { (Get-Date).ToString("yyyy-MM-dd HH:mm:ss") }
 
+function Running {
+    @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match $Pattern }).Count
+}
+
 try {
     [Awake]::Hold()
-    "$(& $stamp)  holder maskinen vaaken mens '$ProcessName' kjorer"
+    "$(& $stamp)  holder maskinen vaaken mens jobber matchende '$Pattern' kjorer"
 
     # A grace period covers the gap between two chained jobs, so the build
     # finishing and the training starting does not drop the request.
     $idleSince = $null
     while ($true) {
-        $running = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
-        if ($running.Count -gt 0) {
+        if ((Running) -gt 0) {
             $idleSince = $null
         }
         elseif ($null -eq $idleSince) {
             $idleSince = Get-Date
         }
         elseif (((Get-Date) - $idleSince).TotalSeconds -ge $GraceSeconds) {
-            "$(& $stamp)  ingen '$ProcessName' paa $GraceSeconds s, slipper vaakelaasen"
+            "$(& $stamp)  ingen slike jobber paa $GraceSeconds s, slipper vaakelaasen"
             break
         }
         Start-Sleep -Seconds 15
