@@ -349,7 +349,16 @@ def main(argv=None):
     parser.add_argument("--model", default=None)
     args = parser.parse_args(argv)
 
-    payload = build(out=args.out, model_dir=args.model)
+    # This runs every ten minutes, so a run that collides with an hour-long
+    # replay is simply skipped: the next one is never far away, and two
+    # DuckDB jobs at once take the machine down rather than queueing.
+    from .joblock import heavy
+
+    with heavy("site", wait=False) as got:
+        if not got:
+            return 0
+        payload = build(out=args.out, model_dir=args.model)
+
     size = Path(args.out).stat().st_size / 1e6
     print(f"{len(payload['network']['stops'])} stops, "
           f"{len(payload['network']['routes'])} routes, "

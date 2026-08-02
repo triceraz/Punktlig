@@ -13,6 +13,7 @@ The no-lookahead rule is enforced structurally:
 import os
 import sys
 from bisect import bisect_left, bisect_right
+from contextlib import contextmanager
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from itertools import groupby
@@ -410,6 +411,36 @@ def _duck_connect(archive_path, memory_limit=DUCK_MEMORY_LIMIT):
     return con
 
 
+@contextmanager
+def frozen_archive(archive_path):
+    """Yield a path to a still copy of the hot database.
+
+    The replay reads the archive for the better part of an hour while the
+    collector keeps writing to it every minute. DuckDB's SQLite reader opens
+    several connections to scan in parallel and they do not share one read
+    transaction, so a row can be read from a page that is being rewritten;
+    the symptom is a string that decodes as invalid unicode, hours in, on
+    data that is provably clean when read on its own.
+
+    VACUUM INTO writes a consistent copy in a single statement without
+    blocking the writer, which removes the race rather than retrying it. The
+    copy costs a couple of gigabytes of scratch and a minute of wall clock,
+    against a replay that otherwise has to start over.
+    """
+    source = Path(archive_path)
+    still = source.with_name(source.name + ".frozen")
+    still.unlink(missing_ok=True)
+    conn = db.connect(source)
+    try:
+        conn.execute("VACUUM INTO ?", (str(still),))
+    finally:
+        conn.close()
+    try:
+        yield str(still)
+    finally:
+        still.unlink(missing_ok=True)
+
+
 def _open_sources(archive_path, parquet_dir, sample=0):
     """Return (weather_rows, call_rows, close) over hot SQLite plus any compacted Parquet.
 
@@ -468,7 +499,18 @@ def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR, samp
     `with_bunching` still needs the Python pre-pass, because bunching reads
     individual passings rather than bucket totals. Those features measured as
     a wash and are parked, so that cost is only paid when asked for.
+
+    The whole replay reads one frozen copy of the hot database rather than
+    the live file, so the collector can keep collecting throughout. Two
+    passes over a moving archive would not even agree with each other.
     """
+    with frozen_archive(archive_path) as still:
+        return _build(still, out_path, parquet_dir, sample, bucket_seconds,
+                      with_bunching, sql_history)
+
+
+def _build(archive_path, out_path, parquet_dir, sample, bucket_seconds,
+           with_bunching, sql_history):
     out = db.connect(out_path)
     out.execute("DROP TABLE IF EXISTS training_row")  # rebuilds are idempotent, schema may gain columns
     out.executescript(SCHEMA)
@@ -689,7 +731,10 @@ if __name__ == "__main__":
                         help="build history with the in-memory Python pre-pass "
                              "instead of DuckDB (needs --sample on a large archive)")
     args = parser.parse_args()
-    written = build(sample=args.sample, sql_history=not args.python_history)
+    from .joblock import heavy  # the site export runs every ten minutes
+
+    with heavy("dataset"):
+        written = build(sample=args.sample, sql_history=not args.python_history)
     if args.sample and args.sample < 16:
         print(f"sampled {args.sample}/16 of journeys")
     print(f"training rows written: {written} -> {OUT_PATH}")
