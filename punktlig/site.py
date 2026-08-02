@@ -350,6 +350,12 @@ def main(argv=None):
     parser.add_argument("--model", default=None)
     args = parser.parse_args(argv)
 
+    # Credentials live beside the archive, outside the repository.
+    from .config import DATA_DIR
+    from .publish import load_env
+
+    load_env(Path(DATA_DIR) / "punktlig.env")
+
     # This runs every ten minutes, so a run that collides with an hour-long
     # replay is simply skipped: the next one is never far away, and two
     # DuckDB jobs at once take the machine down rather than queueing.
@@ -364,6 +370,17 @@ def main(argv=None):
     print(f"{len(payload['network']['stops'])} stops, "
           f"{len(payload['network']['routes'])} routes, "
           f"{len(payload['vehicles'])} vehicles -> {args.out} ({size:.1f} MB)")
+
+    # The export is state, not source. Publishing it to object storage keeps
+    # it out of the repository's history, where ten-minute commits had grown
+    # to three quarters of every commit ever made. A machine without
+    # credentials still writes its local copy and simply says so.
+    from . import publish
+
+    try:
+        print(f"published -> {publish.upload(payload)}")
+    except publish.NotConfigured as exc:
+        print(f"not published: {exc}")
     return 0
 
 
