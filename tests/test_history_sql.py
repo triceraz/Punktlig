@@ -18,7 +18,8 @@ try:
 except ImportError:
     HAVE_DUCKDB = False
 
-from punktlig.dataset import HistoryIndex, _open_sources
+from punktlig import db
+from punktlig.dataset import HistoryIndex, _open_sources, build
 from punktlig.history_sql import SqlHistory
 from test_dataset import D, seed_archive
 from test_dataset import seed_second_journey
@@ -89,6 +90,47 @@ class SqlHistoryMatchesPythonTest(unittest.TestCase):
         # 10:00:30 and closed by 10:02.
         self.assertIsNone(self.python.line_recent(at("10:00:30"), "RUT:Line:12", "1", self.WINDOW))
         self.assertIsNone(self.sql.line_recent(at("10:00:30"), "RUT:Line:12", "1", self.WINDOW))
+
+
+@unittest.skipUnless(HAVE_DUCKDB, "duckdb not installed (analysis extra)")
+class BuildIsUnchangedByTheBackendTest(unittest.TestCase):
+    """Whichever way history is aggregated, the training rows must be equal.
+
+    The lookups being equal is not quite the same claim as the replay being
+    equal: the replay is what picks the moments, and a backend swapped in
+    under it could still be wired to the wrong one.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        archive = Path(cls.tmp.name) / "archive.db"
+        seed_archive(archive)
+        seed_second_journey(archive)
+
+        cls.rows = []
+        for name, use_sql in (("sql", True), ("python", False)):
+            out = Path(cls.tmp.name) / f"{name}.db"
+            build(archive_path=archive, out_path=out,
+                  parquet_dir=Path(cls.tmp.name) / "none",
+                  bucket_seconds=60, sql_history=use_sql)
+            conn = db.connect(out)
+            try:
+                cls.rows.append(conn.execute(
+                    "SELECT * FROM training_row ORDER BY poll_id, journey_ref, order_no"
+                ).fetchall())
+            finally:
+                conn.close()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_both_backends_write_something(self):
+        self.assertTrue(self.rows[0])
+
+    def test_both_backends_write_the_same_rows(self):
+        self.assertEqual(self.rows[0], self.rows[1])
 
 
 if __name__ == "__main__":

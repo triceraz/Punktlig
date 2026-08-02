@@ -59,16 +59,89 @@ PARAMS = {
 }
 
 
+ROW_FILTER = (
+    f"ABS(label_delay_sec) < {MAX_ABS_DELAY} AND horizon_sec < {MAX_HORIZON}"
+    " AND entur_pred_delay_sec IS NOT NULL AND current_delay_sec IS NOT NULL"
+)
+
+
 def load_rows(dataset_path):
     conn = db.connect(dataset_path)
     sql = f"""
         SELECT {', '.join(FEATURES)}, label_delay_sec, entur_pred_delay_sec, operating_date
         FROM training_row
-        WHERE ABS(label_delay_sec) < {MAX_ABS_DELAY} AND horizon_sec < {MAX_HORIZON}
-          AND entur_pred_delay_sec IS NOT NULL AND current_delay_sec IS NOT NULL
+        WHERE {ROW_FILTER}
         ORDER BY polled_at
     """
     return conn.execute(sql).fetchall()
+
+
+def load_matrix(dataset_path, valid_days):
+    """Stream the dataset straight into float32 matrices.
+
+    `load_rows` materialises every row as a tuple of Python objects, which
+    costs several hundred bytes per row once object headers are counted; at
+    eighteen million rows that is more memory than the machine has. Here the
+    only per-row Python work is copying values into preallocated arrays, so
+    the whole dataset costs rows times features times four bytes and nothing
+    else grows with it.
+
+    The day split moves into SQL: validation dates are found first, the
+    vocabularies are built from the other days only, and one ordered scan
+    delivers training rows before validation rows, both in time order.
+    Returns (X, y, entur, split, vocabs, valid_dates, n) where valid_dates is
+    empty when the archive spans too few days to hold one out.
+    """
+    conn = db.connect(dataset_path)
+    try:
+        dates = [d for (d,) in conn.execute(
+            f"SELECT DISTINCT operating_date FROM training_row WHERE {ROW_FILTER}"
+            " ORDER BY 1")]
+        valid_dates = dates[-valid_days:] if len(dates) > valid_days else []
+        quoted = ", ".join(f"'{d}'" for d in valid_dates) or "''"
+        is_valid = f"(operating_date IN ({quoted}))"
+
+        vocabs = {}
+        for col in CATEGORICAL:
+            values = [v for (v,) in conn.execute(
+                f"SELECT DISTINCT {col} FROM training_row"
+                f" WHERE {ROW_FILTER} AND NOT {is_valid} AND {col} IS NOT NULL"
+                " ORDER BY 1")]
+            vocabs[col] = {v: i + 1 for i, v in enumerate(values)}  # 0 stays "unknown"
+
+        n = conn.execute(
+            f"SELECT COUNT(*) FROM training_row WHERE {ROW_FILTER}").fetchone()[0]
+        split = conn.execute(
+            f"SELECT COUNT(*) FROM training_row WHERE {ROW_FILTER} AND NOT {is_valid}"
+        ).fetchone()[0]
+
+        X = np.full((n, len(FEATURES)), np.nan, dtype=np.float32)
+        y = np.empty(n, dtype=np.float32)
+        entur = np.empty(n, dtype=np.float32)
+        cursor = conn.execute(f"""
+            SELECT {', '.join(FEATURES)}, label_delay_sec, entur_pred_delay_sec
+            FROM training_row
+            WHERE {ROW_FILTER}
+            ORDER BY {is_valid}, polled_at
+        """)
+        n_numeric = len(NUMERIC)
+        i = 0
+        while True:
+            batch = cursor.fetchmany(50_000)
+            if not batch:
+                break
+            for row in batch:
+                for j in range(n_numeric):
+                    if row[j] is not None:
+                        X[i, j] = row[j]
+                for j, col in enumerate(CATEGORICAL):
+                    X[i, n_numeric + j] = vocabs[col].get(row[n_numeric + j], 0)
+                y[i] = row[-2]
+                entur[i] = row[-1]
+                i += 1
+        return X, y, entur, split, vocabs, valid_dates, n
+    finally:
+        conn.close()
 
 
 def day_split(rows, valid_days, date_of=lambda r: r[-1]):
@@ -110,10 +183,10 @@ def encode(rows, split):
     return X, y, entur, vocabs
 
 
-def evaluate(rows, split, y, entur, pred):
+def evaluate(X, split, y, entur, pred):
     """Validation MAE per horizon bucket: all baselines plus the model."""
-    horizon = np.array([row[0] for row in rows], dtype=float)
-    current = np.array([row[NUMERIC.index("current_delay_sec")] for row in rows], dtype=float)
+    horizon = X[:, FEATURES.index("horizon_sec")].astype(float)
+    current = X[:, FEATURES.index("current_delay_sec")].astype(float)
     print(f"\n{'horizon':>10} | {'n':>7} | {'timetable':>9} | {'naive':>9} | {'entur':>9} | {'model':>9}")
     print("-" * 70)
     summary = {}
@@ -123,12 +196,14 @@ def evaluate(rows, split, y, entur, pred):
         if not n:
             continue
         yv = y[split:][mask]
+        # Plain floats: numpy's float32 survives arithmetic and printing but
+        # refuses json, which cost a finished training run its meta file once.
         stats = {
             "n": n,
-            "timetable": mae(list(np.abs(yv))),
-            "naive": mae(list(np.abs(yv - current[split:][mask]))),
-            "entur": mae(list(np.abs(yv - entur[split:][mask]))),
-            "model": mae(list(np.abs(yv - pred[mask]))),
+            "timetable": float(mae(list(np.abs(yv)))),
+            "naive": float(mae(list(np.abs(yv - current[split:][mask])))),
+            "entur": float(mae(list(np.abs(yv - entur[split:][mask])))),
+            "model": float(mae(list(np.abs(yv - pred[mask])))),
         }
         summary[f"{lo}-{hi}min"] = stats
         print(
@@ -180,24 +255,20 @@ def main(argv=None):
         FEATURES[:] = NUMERIC + CATEGORICAL
         print(f"ablation: excluded {', '.join(sorted(dropped))}")
 
-    rows = load_rows(args.dataset)
-    if len(rows) < 1000:
-        print(f"only {len(rows)} usable rows; collect more data before training")
+    X, y, entur, split, vocabs, valid_dates, n = load_matrix(args.dataset, args.valid_days)
+    if n < 1000:
+        print(f"only {n} usable rows; collect more data before training")
         return 1
-
-    result = day_split(rows, args.valid_days)
-    if result:
-        rows, split, valid_dates = result
+    if valid_dates:
         print(f"day split: validating on {', '.join(valid_dates)}")
     else:
-        split = int(len(rows) * 0.8)
+        split = int(n * 0.8)
         print(
             "WARNING: dataset spans too few operating dates for a day split; "
             "falling back to an 80/20 time split. Same-day validation shares "
             "conditions with training, so treat these numbers as optimistic."
         )
-    X, y, entur, vocabs = encode(rows, split)
-    print(f"rows: {len(rows)} (train {split}, valid {len(rows) - split})")
+    print(f"rows: {n} (train {split}, valid {n - split})")
 
     cat_idx = [FEATURES.index(c) for c in CATEGORICAL]
     dtrain = lgb.Dataset(
@@ -212,7 +283,7 @@ def main(argv=None):
     print(f"best iteration: {booster.best_iteration}")
 
     pred = booster.predict(X[split:], num_iteration=booster.best_iteration)
-    summary = evaluate(rows, split, y, entur, pred)
+    summary = evaluate(X, split, y, entur, pred)
 
     gains = sorted(
         zip(FEATURES, booster.feature_importance("gain")), key=lambda p: -p[1]
@@ -228,10 +299,16 @@ def main(argv=None):
         json.dumps(
             {
                 "trained_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "rows": len(rows),
+                "rows": n,
                 "features": FEATURES,
                 "vocabs": vocabs,
                 "validation": summary,
+                # Share of total gain per feature, so the site can show what
+                # the model actually leans on rather than a hand-written list.
+                "importance": {
+                    name: round(float(gain) / max(1.0, float(sum(g for _, g in gains))), 4)
+                    for name, gain in gains
+                },
             },
             indent=2,
         )

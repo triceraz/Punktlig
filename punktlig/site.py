@@ -177,15 +177,19 @@ def vehicles(conn, rows, now=None):
     modes = dict(conn.execute("SELECT line_ref, mode FROM line"))
 
     by_journey = {}
+    heading_for = {}  # the last stop on the journey, which is what a sign would say
     for row in rows:
         key = (row["journey_ref"], row["operating_date"])
         current = by_journey.get(key)
         if current is None or row["order_no"] < current["order_no"]:
             by_journey[key] = row
+        tail = heading_for.get(key)
+        if tail is None or row["order_no"] > tail[0]:
+            heading_for[key] = (row["order_no"], row["stop_name"])
 
     origins = _origin_stops(conn, list(by_journey.values()))
     out = []
-    for row in by_journey.values():
+    for key, row in by_journey.items():
         target = quays.get(row["stop_ref"])
         if not target:
             continue
@@ -217,6 +221,9 @@ def vehicles(conn, rows, now=None):
             "line": (row["line_ref"] or "").split(":")[-1],
             "mode": modes.get(row["line_ref"], "bus"),
             "stop": row["stop_name"],
+            # Destination as the sign would show it; the vehicle's own next
+            # stop when the journey has no later calls left in the poll.
+            "dest": heading_for[key][1] or row["stop_name"],
             "in_min": round(row["horizon_sec"] / 60, 1),
             "entur": round(row["entur_pred_delay_sec"]),
             "model": round(row["model_pred_delay_sec"]),
@@ -267,6 +274,9 @@ def score(model_dir):
              "entur": round(v["entur"], 1), "model": round(v["model"], 1)}
             for k, v in buckets.items()
         ],
+        # What the model actually leans on, for the site's method page.
+        # Older metas predate the field; the page just skips the figure then.
+        "importance": meta.get("importance"),
     }
 
 

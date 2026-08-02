@@ -16,10 +16,11 @@ that closed strictly before T are visible, because a bucket still filling
 could contain observations from after T.
 """
 
-from datetime import timedelta
+from array import array
 
 from .config import DB_PATH, PARQUET_DIR
-from .dataset import BUCKET_SECONDS, SLACK_MIN_OBS, _parquet_files
+from .dataset import (BUCKET_SECONDS, DUCK_MEMORY_LIMIT, HistoryLookups,
+                      _duck_connect, _parquet_files)
 
 # Every observation of a stop being passed, with the delay it was passed
 # with and the moment that became known. One scan feeds every aggregate.
@@ -92,76 +93,103 @@ FROM first_seen GROUP BY ALL
 """
 
 
-class SqlHistory:
-    """The same lookups as `dataset.HistoryIndex`, answered by DuckDB."""
+# One row per entity instead of one row per entity and bucket. The replay
+# asks about an entity thousands of times, so the buckets are collected here
+# and handed over as three parallel lists, which keeps the key string out of
+# every row and lets the reader store the whole series as packed arrays.
+GROUPED_SQL = {
+    "segments": """
+        SELECT line_ref, direction, stop_from, stop_to,
+               list(bucket ORDER BY bucket) AS buckets,
+               list(n ORDER BY bucket) AS counts,
+               list(total ORDER BY bucket) AS totals
+        FROM segment_buckets GROUP BY line_ref, direction, stop_from, stop_to
+    """,
+    "stop_delays": """
+        SELECT stop_ref,
+               list(bucket ORDER BY bucket) AS buckets,
+               list(n ORDER BY bucket) AS counts,
+               list(total ORDER BY bucket) AS totals
+        FROM stop_buckets GROUP BY stop_ref
+    """,
+    "line_delays": """
+        SELECT line_ref, direction,
+               list(bucket ORDER BY bucket) AS buckets,
+               list(n ORDER BY bucket) AS counts,
+               list(total ORDER BY bucket) AS totals
+        FROM line_buckets GROUP BY line_ref, direction
+    """,
+}
+
+
+def _packed(buckets, counts, totals):
+    """The prefix-summed triple `HistoryLookups` reads, in packed arrays.
+
+    Python ints and floats cost about forty bytes each once a list has
+    pointed at them. The archive produces millions of bucket entries, so they
+    are stored as machine words instead; `bisect` treats an array as a
+    sequence, so nothing above this line changes.
+    """
+    running_count, running_total = 0, 0.0
+    packed_counts, packed_totals = array("q", [0]), array("d", [0.0])
+    for count, total in zip(counts, totals):
+        running_count += count
+        running_total += total
+        packed_counts.append(running_count)
+        packed_totals.append(running_total)
+    return array("q", buckets), packed_counts, packed_totals
+
+
+class SqlHistory(HistoryLookups):
+    """The same lookups as `dataset.HistoryIndex`, aggregated by DuckDB.
+
+    The aggregates are read out once and then held as packed arrays, so the
+    database is closed before the replay starts. That matters: a query per
+    row costs tens of milliseconds, which is fine for a test and hopeless for
+    a million rows, while the aggregate itself is around a million entries no
+    matter how many vehicles produced it.
+    """
 
     def __init__(self, archive_path=DB_PATH, parquet_dir=PARQUET_DIR,
-                 bucket_seconds=BUCKET_SECONDS, memory_limit="2GB"):
-        import duckdb
-
+                 bucket_seconds=BUCKET_SECONDS, memory_limit=DUCK_MEMORY_LIMIT):
         self.bucket = bucket_seconds
-        self.con = duckdb.connect()
-        self.con.execute(f"SET memory_limit='{memory_limit}'")
-        self.con.execute("INSTALL sqlite; LOAD sqlite;")
-        self.con.execute(f"ATTACH '{archive_path}' AS src (TYPE sqlite, READ_ONLY)")
+        self.passes = {}  # bunching is parked; no per-pass detail is kept
+        con = _duck_connect(archive_path, memory_limit)
+        try:
+            columns = ("journey_ref, operating_date, line_ref, direction, call_type, "
+                       "stop_ref, order_no, aimed_arr, actual_arr, aimed_dep, actual_dep, "
+                       "cancelled")
+            parts = [
+                f"SELECT {columns}, p.polled_at FROM src.call_snapshot c "
+                "JOIN src.poll p ON p.poll_id = c.poll_id"
+            ]
+            files = _parquet_files(parquet_dir, "calls")
+            if files:
+                parts.append(f"SELECT {columns}, polled_at FROM read_parquet({files!r})")
+            con.execute(f"CREATE OR REPLACE VIEW calls AS {' UNION ALL '.join(parts)}")
 
-        columns = ("journey_ref, operating_date, line_ref, direction, call_type, "
-                   "stop_ref, order_no, aimed_arr, actual_arr, aimed_dep, actual_dep, "
-                   "cancelled")
-        parts = [
-            f"SELECT {columns}, p.polled_at FROM src.call_snapshot c "
-            "JOIN src.poll p ON p.poll_id = c.poll_id"
-        ]
-        files = _parquet_files(parquet_dir, "calls")
-        if files:
-            parts.append(f"SELECT {columns}, polled_at FROM read_parquet({files!r})")
-        self.con.execute(f"CREATE OR REPLACE VIEW calls AS {' UNION ALL '.join(parts)}")
+            for statement in (PASSES_SQL, FIRST_SEEN_SQL, SEGMENTS_SQL,
+                              STOP_BUCKETS_SQL, LINE_BUCKETS_SQL):
+                con.execute(statement.format(bucket=bucket_seconds))
+            con.execute("DROP TABLE passes")
 
-        for statement in (PASSES_SQL, FIRST_SEEN_SQL, SEGMENTS_SQL,
-                          STOP_BUCKETS_SQL, LINE_BUCKETS_SQL):
-            self.con.execute(statement.format(bucket=bucket_seconds))
-        self.con.execute("DROP TABLE passes")
+            for name, sql in GROUPED_SQL.items():
+                setattr(self, name, self._read(con, sql))
+        finally:
+            con.close()
+
+    @staticmethod
+    def _read(con, sql):
+        """Entity key to packed prefix sums, streamed a batch at a time."""
+        store = {}
+        cursor = con.execute(sql)
+        while True:
+            rows = cursor.fetchmany(2000)
+            if not rows:
+                return store
+            for row in rows:
+                key = row[0] if len(row) == 4 else tuple(row[:-3])
+                store[key] = _packed(*row[-3:])
 
     def close(self):
-        self.con.close()
-
-    def _bucket_of(self, moment):
-        return int(moment.timestamp()) // self.bucket
-
-    def typical(self, at_time, line_ref, direction, stop_from, stop_to):
-        row = self.con.execute(
-            "SELECT SUM(n), SUM(total) FROM segment_buckets "
-            "WHERE line_ref = ? AND direction IS NOT DISTINCT FROM ? "
-            "AND stop_from = ? AND stop_to = ? AND bucket < ?",
-            [line_ref, direction, stop_from, stop_to, self._bucket_of(at_time)],
-        ).fetchone()
-        if not row or not row[0] or row[0] < SLACK_MIN_OBS:
-            return None
-        return row[1] / row[0]
-
-    def _recent(self, sql, params, at_time, window):
-        end = self._bucket_of(at_time)
-        start = end - max(1, int(window.total_seconds()) // self.bucket)
-        row = self.con.execute(sql, params + [start, end]).fetchone()
-        if not row or not row[0]:
-            return None
-        return row[1] / row[0]
-
-    def stop_recent(self, at_time, stop_ref, window=timedelta(minutes=30)):
-        return self._recent(
-            "SELECT SUM(n), SUM(total) FROM stop_buckets "
-            "WHERE stop_ref = ? AND bucket >= ? AND bucket < ?",
-            [stop_ref], at_time, window,
-        )
-
-    def line_recent(self, at_time, line_ref, direction, window=timedelta(minutes=30)):
-        return self._recent(
-            "SELECT SUM(n), SUM(total) FROM line_buckets "
-            "WHERE line_ref = ? AND direction IS NOT DISTINCT FROM ? "
-            "AND bucket >= ? AND bucket < ?",
-            [line_ref, direction], at_time, window,
-        )
-
-    def last_pass(self, at_time, line_ref, direction, stop_ref, exclude_journey):
-        """Bunching is parked; the SQL version does not carry per-pass detail."""
-        return None, None
+        """The database is already closed; kept so callers can be uniform."""

@@ -10,6 +10,7 @@ The no-lookahead rule is enforced structurally:
   - the label (actual arrival) must come from a strictly later poll
 """
 
+import os
 import sys
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
@@ -132,7 +133,88 @@ class WeatherIndex:
         return temp, precip, wind
 
 
-class HistoryIndex:
+class HistoryLookups:
+    """The as-of-T questions the replay asks of history, and nothing else.
+
+    Two things build the answers: `HistoryIndex` by scanning the archive in
+    Python, and `history_sql.SqlHistory` by letting DuckDB aggregate. They
+    disagree about cost, not about arithmetic, so the reading half lives here
+    once and the tests can hold the two constructions against each other.
+
+    Every subclass must set `bucket`, the three prefix-summed stores, and
+    `passes`. A store maps an entity to (bucket keys, running counts, running
+    sums), all three the same length plus a leading zero on the running pair,
+    so a range is two subtractions after one binary search.
+    """
+
+    def _bucket_of(self, moment):
+        return int(moment.timestamp()) // self.bucket
+
+    @staticmethod
+    def _prefix(buckets):
+        """Sorted bucket keys with running count and sum, for O(log n) lookups."""
+        keys = sorted(buckets)
+        counts, sums = [0], [0.0]
+        for key in keys:
+            count, total = buckets[key]
+            counts.append(counts[-1] + count)
+            sums.append(sums[-1] + total)
+        return keys, counts, sums
+
+    def _closed_before(self, entry, at_time, since_bucket=None):
+        """(count, sum) over buckets that closed before T, optionally windowed."""
+        if not entry:
+            return 0, 0.0
+        keys, counts, sums = entry
+        end = bisect_left(keys, self._bucket_of(at_time))
+        start = 0 if since_bucket is None else bisect_left(keys, since_bucket)
+        if end <= start:
+            return 0, 0.0
+        return counts[end] - counts[start], sums[end] - sums[start]
+
+    def _recent(self, entry, at_time, window):
+        since = self._bucket_of(at_time) - max(1, int(window.total_seconds()) // self.bucket)
+        count, total = self._closed_before(entry, at_time, since_bucket=since)
+        return total / count if count else None
+
+    def stop_recent(self, at_time, stop_ref, window):
+        """Mean delay of passes at the stop, any line, in the window before T."""
+        return self._recent(self.stop_delays.get(stop_ref), at_time, window)
+
+    def line_recent(self, at_time, line_ref, direction, window):
+        """Mean delay of passes on the line, any stop, in the window before T."""
+        return self._recent(
+            self.line_delays.get((line_ref, direction)), at_time, window
+        )
+
+    def typical(self, at_time, line_ref, direction, stop_from, stop_to):
+        """Mean observed runtime for the segment, over buckets closed before T."""
+        count, total = self._closed_before(
+            self.segments.get((line_ref, direction, stop_from, stop_to)), at_time
+        )
+        if count < SLACK_MIN_OBS:
+            return None
+        return total / count
+
+    def last_pass(self, at_time, line_ref, direction, stop_ref, exclude_journey):
+        """Latest pass of the stop by another vehicle on the line, known at T.
+
+        Returns (actual_pass_time, delay_at_pass) or (None, None).
+        """
+        entry = self.passes.get((line_ref, direction, stop_ref))
+        if not entry:
+            return None, None
+        times, events = entry
+        idx = bisect_right(times, at_time) - 1
+        while idx >= 0:
+            _, actual, delay, journey_ref = events[idx]
+            if journey_ref != exclude_journey:
+                return actual, delay
+            idx -= 1
+        return None, None
+
+
+class HistoryIndex(HistoryLookups):
     """As-of-T history, aggregated into time buckets so it fits in memory.
 
     Two lookups share one scan of the archive:
@@ -218,72 +300,6 @@ class HistoryIndex:
             for key, events in raw_passes.items():
                 events.sort()
                 self.passes[key] = ([e[0] for e in events], events)
-
-    def _bucket_of(self, moment):
-        return int(moment.timestamp()) // self.bucket
-
-    @staticmethod
-    def _prefix(buckets):
-        """Sorted bucket keys with running count and sum, for O(log n) lookups."""
-        keys = sorted(buckets)
-        counts, sums = [0], [0.0]
-        for key in keys:
-            count, total = buckets[key]
-            counts.append(counts[-1] + count)
-            sums.append(sums[-1] + total)
-        return keys, counts, sums
-
-    def _closed_before(self, entry, at_time, since_bucket=None):
-        """(count, sum) over buckets that closed before T, optionally windowed."""
-        if not entry:
-            return 0, 0.0
-        keys, counts, sums = entry
-        end = bisect_left(keys, self._bucket_of(at_time))
-        start = 0 if since_bucket is None else bisect_left(keys, since_bucket)
-        if end <= start:
-            return 0, 0.0
-        return counts[end] - counts[start], sums[end] - sums[start]
-
-    def _recent(self, entry, at_time, window):
-        since = self._bucket_of(at_time) - max(1, int(window.total_seconds()) // self.bucket)
-        count, total = self._closed_before(entry, at_time, since_bucket=since)
-        return total / count if count else None
-
-    def stop_recent(self, at_time, stop_ref, window):
-        """Mean delay of passes at the stop, any line, in the window before T."""
-        return self._recent(self.stop_delays.get(stop_ref), at_time, window)
-
-    def line_recent(self, at_time, line_ref, direction, window):
-        """Mean delay of passes on the line, any stop, in the window before T."""
-        return self._recent(
-            self.line_delays.get((line_ref, direction)), at_time, window
-        )
-
-    def typical(self, at_time, line_ref, direction, stop_from, stop_to):
-        """Mean observed runtime for the segment, over buckets closed before T."""
-        count, total = self._closed_before(
-            self.segments.get((line_ref, direction, stop_from, stop_to)), at_time
-        )
-        if count < SLACK_MIN_OBS:
-            return None
-        return total / count
-
-    def last_pass(self, at_time, line_ref, direction, stop_ref, exclude_journey):
-        """Latest pass of the stop by another vehicle on the line, known at T.
-
-        Returns (actual_pass_time, delay_at_pass) or (None, None).
-        """
-        entry = self.passes.get((line_ref, direction, stop_ref))
-        if not entry:
-            return None, None
-        times, events = entry
-        idx = bisect_right(times, at_time) - 1
-        while idx >= 0:
-            _, actual, delay, journey_ref = events[idx]
-            if journey_ref != exclude_journey:
-                return actual, delay
-            idx -= 1
-        return None, None
 
 
 class SituationIndex:
@@ -372,6 +388,28 @@ def _sample_clause(keep):
     return f" AND lower(substr(c.journey_ref, -1)) IN ({digits})"
 
 
+# DuckDB otherwise helps itself to four fifths of the machine and spills into
+# the working directory. Replaying the archive means sorting every call ever
+# archived, so both defaults are wrong here: the limit has to leave room for
+# the replay itself, and the spill belongs on the disk that holds the archive
+# rather than the one holding the code.
+DUCK_MEMORY_LIMIT = "2GB"
+
+
+def _duck_connect(archive_path, memory_limit=DUCK_MEMORY_LIMIT):
+    """A DuckDB connection that is bounded and spills somewhere sensible."""
+    import duckdb  # analysis extra; only needed once parquet files exist
+
+    con = duckdb.connect()
+    con.execute(f"SET memory_limit='{memory_limit}'")
+    spill = os.path.dirname(os.path.abspath(archive_path))
+    if spill:
+        con.execute(f"SET temp_directory='{spill}'")
+    con.execute("INSTALL sqlite; LOAD sqlite;")
+    con.execute(f"ATTACH '{archive_path}' AS src (TYPE sqlite, READ_ONLY)")
+    return con
+
+
 def _open_sources(archive_path, parquet_dir, sample=0):
     """Return (weather_rows, call_rows, close) over hot SQLite plus any compacted Parquet.
 
@@ -391,11 +429,7 @@ def _open_sources(archive_path, parquet_dir, sample=0):
         )
         return weather_rows, call_rows, src.close
 
-    import duckdb  # analysis extra; only needed once parquet files exist
-
-    con = duckdb.connect()
-    con.execute("INSTALL sqlite; LOAD sqlite;")
-    con.execute(f"ATTACH '{archive_path}' AS src (TYPE sqlite, READ_ONLY)")
+    con = _duck_connect(archive_path)
 
     weather_sql = f"SELECT {WEATHER_COLS} FROM src.weather_snapshot"
     call_sql = SQLITE_CALL_SQL.format(prefix="src.", sample=clause)
@@ -416,29 +450,41 @@ def _open_sources(archive_path, parquet_dir, sample=0):
 
 
 def build(archive_path=DB_PATH, out_path=OUT_PATH, parquet_dir=PARQUET_DIR, sample=0,
-          bucket_seconds=BUCKET_SECONDS, with_bunching=False):
+          bucket_seconds=BUCKET_SECONDS, with_bunching=False, sql_history=True):
     """Replay the archive into training rows.
 
-    `sample` keeps that many sixteenths of all journeys. The history indexes
-    are held in memory so every as-of-T lookup is exact, which costs roughly
-    a gigabyte per four million archived calls; sampling is what makes a
-    large archive fit on a small machine. It samples whole journeys, so no
-    journey is split across the boundary.
+    History is aggregated by DuckDB, which scans the archive and spills to
+    disk rather than building the counts as Python objects. That is what lets
+    the whole archive be replayed: the Python pre-pass cost roughly a
+    gigabyte per four million archived calls and had to be fed a sample to
+    fit, and a sampled history is not only smaller but wrong in a quiet way,
+    since "how late has this line been lately" then answers from a fraction
+    of the vehicles that were actually out.
+
+    `sample` keeps that many sixteenths of all journeys, whole journeys at a
+    time so none is split across the boundary. It is a fallback for a machine
+    that cannot spare the memory, not the normal path.
+
+    `with_bunching` still needs the Python pre-pass, because bunching reads
+    individual passings rather than bucket totals. Those features measured as
+    a wash and are parked, so that cost is only paid when asked for.
     """
     out = db.connect(out_path)
     out.execute("DROP TABLE IF EXISTS training_row")  # rebuilds are idempotent, schema may gain columns
     out.executescript(SCHEMA)
     out.commit()
 
-    # Pre-pass for the slack and bunching features: the cursors are
-    # single-use, so the sources are opened twice, history first, then replay.
-    _, history_rows, close_history = _open_sources(archive_path, parquet_dir, sample)
-    # Bunching needs every individual passing rather than bucket totals, which
-    # is the one thing here that grows with traffic. Those features are parked
-    # after measuring as a wash, so the memory is not spent unless asked for.
-    history = HistoryIndex(history_rows, bucket_seconds=bucket_seconds,
-                           keep_passes=with_bunching)
-    close_history()
+    if sql_history and not with_bunching:
+        from .history_sql import SqlHistory  # analysis extra; imported on use
+
+        history = SqlHistory(archive_path, parquet_dir, bucket_seconds=bucket_seconds)
+    else:
+        # Pre-pass for the slack and bunching features: the cursors are
+        # single-use, so the sources are opened twice, history first, then replay.
+        _, history_rows, close_history = _open_sources(archive_path, parquet_dir, sample)
+        history = HistoryIndex(history_rows, bucket_seconds=bucket_seconds,
+                               keep_passes=with_bunching)
+        close_history()
 
     situations = SituationIndex(_situation_rows(archive_path))
 
@@ -637,10 +683,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Replay the archive into training rows")
     parser.add_argument("--sample", type=int, default=0, metavar="N",
                         help="keep N sixteenths of all journeys (16 or 0 means all). "
-                             "The history indexes live in memory, so a large archive "
-                             "needs this on a small machine")
+                             "Only the training rows are thinned; history is "
+                             "aggregated from everything either way")
+    parser.add_argument("--python-history", action="store_true",
+                        help="build history with the in-memory Python pre-pass "
+                             "instead of DuckDB (needs --sample on a large archive)")
     args = parser.parse_args()
-    written = build(sample=args.sample)
+    written = build(sample=args.sample, sql_history=not args.python_history)
     if args.sample and args.sample < 16:
         print(f"sampled {args.sample}/16 of journeys")
     print(f"training rows written: {written} -> {OUT_PATH}")

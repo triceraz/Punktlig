@@ -79,10 +79,17 @@ def upcoming_rows(archive_path=DB_PATH, parquet_dir=PARQUET_DIR, dataset=None,
         conn.close()
 
     # History and weather still come from the whole archive: the features
-    # are as-of-now, and now is the newest snapshot's own time.
-    _, history_rows, close_history = _open_sources(archive_path, parquet_dir)
-    history = HistoryIndex(history_rows)
-    close_history()
+    # are as-of-now, and now is the newest snapshot's own time. DuckDB does
+    # the aggregation in well under a minute where the Python pre-pass grew
+    # past the site task's ten-minute cadence and got itself terminated.
+    try:
+        from .history_sql import SqlHistory
+
+        history = SqlHistory(archive_path, parquet_dir)
+    except ImportError:  # duckdb is an analysis extra; answers are identical
+        _, history_rows, close_history = _open_sources(archive_path, parquet_dir)
+        history = HistoryIndex(history_rows)
+        close_history()
     weather_rows, _, close_weather = _open_sources(archive_path, parquet_dir)
     weather = WeatherIndex(weather_rows)
     close_weather()
@@ -99,21 +106,25 @@ def predict(rows, model_dir=None):
     import lightgbm as lgb
     import numpy as np
 
-    from .train import CATEGORICAL, FEATURES, NUMERIC
-
     model_dir = Path(model_dir or MODEL_DIR)
     booster = lgb.Booster(model_file=str(model_dir / "punktlig-lgbm.txt"))
     meta = json.loads((model_dir / "punktlig-lgbm.meta.json").read_text())
     vocabs = meta["vocabs"]
 
-    X = np.full((len(rows), len(FEATURES)), np.nan)
+    # The feature list comes from the meta file, not from the training module:
+    # training variants add or drop features, and serving a booster with any
+    # other column layout than it was fitted on is silently wrong at best.
+    features = meta["features"]
+
+    X = np.full((len(rows), len(features)), np.nan)
     for i, row in enumerate(rows):
-        for j, name in enumerate(NUMERIC):
-            value = row.get(name)
-            if value is not None:
-                X[i, j] = value
-        for j, name in enumerate(CATEGORICAL):
-            X[i, len(NUMERIC) + j] = vocabs.get(name, {}).get(row.get(name), 0)
+        for j, name in enumerate(features):
+            if name in vocabs:
+                X[i, j] = vocabs[name].get(row.get(name), 0)
+            else:
+                value = row.get(name)
+                if value is not None:
+                    X[i, j] = value
 
     for row, value in zip(rows, booster.predict(X)):
         row["model_pred_delay_sec"] = float(value)
