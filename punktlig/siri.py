@@ -61,8 +61,19 @@ def parse_et(xml_bytes):
             "recorded_at": _text(ej, "s:RecordedAtTime"),
             "line_ref": _text(ej, "s:LineRef"),
             "direction": _text(ej, "s:DirectionRef"),
+            # Operators do not agree on where the journey's identity lives.
+            # Ruter and Flytoget wrap it in FramedVehicleJourneyRef together
+            # with the operating day; Vy and Go-Ahead put a bare
+            # DatedVehicleJourneyRef straight on the journey and publish no
+            # operating day at all. Missing this cost the archive every train:
+            # journey_ref came back empty, and the replay drops rows without
+            # one, so months of train traffic were collected and never used.
             "journey_ref": _text(ej, "s:FramedVehicleJourneyRef/s:DatedVehicleJourneyRef")
+            or _text(ej, "s:DatedVehicleJourneyRef")
             or _text(ej, "s:EstimatedVehicleJourneyCode"),
+            # Left as None when the feed omits it. The refs that come without
+            # one already carry the service date inside the identifier, so the
+            # pair stays unique; every join on it has to be null-safe.
             "operating_date": _text(ej, "s:FramedVehicleJourneyRef/s:DataFrameRef"),
             "operator_ref": _text(ej, "s:OperatorRef"),
             "monitored": _flag(ej, "s:Monitored"),

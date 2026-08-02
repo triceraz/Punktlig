@@ -81,7 +81,8 @@ WITH recent AS (
     FROM best b
     JOIN recent r
       ON r.line_ref = b.line_ref AND r.direction IS NOT DISTINCT FROM b.direction
-     AND r.journey_ref = b.journey_ref AND r.operating_date = b.operating_date
+     AND r.journey_ref = b.journey_ref
+     AND r.operating_date IS NOT DISTINCT FROM b.operating_date
 )
 SELECT line_ref, direction, list(stop_ref ORDER BY order_no) AS path
 FROM ordered GROUP BY line_ref, direction

@@ -570,6 +570,22 @@ ROW_COLS = (
 ).split()
 
 
+def _service_date(snapshots):
+    """The day a journey was scheduled to start, for feeds that omit it.
+
+    Read from the earliest aimed time anywhere in the journey, so it is the
+    same answer at every snapshot even once the first calls have dropped out
+    of the feed's rolling window.
+    """
+    earliest = None
+    for _, poll_rows in snapshots:
+        for r in poll_rows:
+            aimed = _ts(r[10]) or _ts(r[13])
+            if aimed and (earliest is None or aimed < earliest):
+                earliest = aimed
+    return earliest.date().isoformat() if earliest else None
+
+
 def iter_rows(cursor, history, weather, situations, require_label=True):
     """Yield one row per (snapshot, future stop), in ROW_COLS order.
 
@@ -585,6 +601,14 @@ def iter_rows(cursor, history, weather, situations, require_label=True):
             (snap_key, list(poll_rows))
             for snap_key, poll_rows in groupby(rows, key=lambda r: (r[3], r[2]))
         ]
+
+        # The train feeds publish no operating day, and training splits on it:
+        # a row without one can never fall in the validation day, so those
+        # journeys would train and never be measured. The service date is the
+        # day the journey was scheduled to set off, which is what an operating
+        # day means, and it is taken from the whole journey rather than the
+        # current snapshot so it cannot drift as earlier calls age out.
+        service_date = operating_date or _service_date(snapshots)
 
         # Ground truth: last seen actual time per stop order, remembering which
         # snapshot it came from so labels can be required to be later than features.
@@ -684,7 +708,7 @@ def iter_rows(cursor, history, weather, situations, require_label=True):
                         snap_key[1],
                         polled_at.isoformat(),
                         journey_ref,
-                        operating_date,
+                        service_date,
                         r[4],
                         r[5],
                         r[7],

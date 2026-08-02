@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 
@@ -31,12 +32,26 @@ def hold_in_another_process(data_dir, seconds):
     return proc
 
 
-def stop(proc):
-    """Kill the holder and close its pipe, so no handle is left dangling."""
+def stop(proc, data_dir):
+    """Kill the holder and wait until its handle is really gone.
+
+    Killing a process releases its lock immediately, but Windows keeps the
+    file handle for a moment afterwards, which is long enough to fail the
+    temporary-directory cleanup and turn a passing test into an error.
+    """
     proc.kill()
     proc.wait(timeout=10)
     if proc.stdout:
         proc.stdout.close()
+    path = lock_path(data_dir)
+    for _ in range(100):
+        try:
+            with open(path, "r+b"):
+                return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            time.sleep(0.05)
 
 
 class JobLockTest(unittest.TestCase):
@@ -56,12 +71,12 @@ class JobLockTest(unittest.TestCase):
 
     def test_a_second_holder_is_refused_rather_than_blocked(self):
         proc = hold_in_another_process(self.dir, 10)
-        self.addCleanup(stop, proc)
+        self.addCleanup(stop, proc, self.dir)
         with heavy("site", wait=False, data_dir=self.dir, log=lambda *a: None) as got:
             self.assertFalse(got)
 
     def test_the_lock_survives_the_holder_being_killed(self):
-        stop(hold_in_another_process(self.dir, 60))
+        stop(hold_in_another_process(self.dir, 60), self.dir)
         # The operating system drops the lock with the process, so no stale
         # owner can wedge the next run.
         with heavy("after", wait=False, data_dir=self.dir, log=lambda *a: None) as got:

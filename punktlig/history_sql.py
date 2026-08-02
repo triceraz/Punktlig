@@ -73,7 +73,9 @@ FROM (
     FROM first_seen a
     JOIN first_seen b
       ON b.journey_ref = a.journey_ref
-     AND b.operating_date = a.operating_date
+     -- Null-safe: the train feeds publish no operating day, and a plain
+     -- equality would silently drop every one of their segments.
+     AND b.operating_date IS NOT DISTINCT FROM a.operating_date
      AND b.order_no = a.order_no + 1
 )
 WHERE runtime > 0
