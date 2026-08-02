@@ -3,613 +3,1031 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Punktlig — appen sier «Nå». Vogna er ikke der.</title>
+<title>Punktlig — sanntidsarkiv for kollektivtrafikk i Oslo og Akershus</title>
+<meta name="description" content="Et arkiv som noterer hvert minutt hva Ruter-appen tror om avgangene, og en modell som gjetter bedre på nøyaktig de samme opplysningene.">
 <style>
   :root {
-    --ink: #f4f7fa;
-    --dim: #aab4c2;
-    --faint: #6b7686;
-    --us: #34d399;
-    --them: #ff4d5e;
-    --edge: #161c25;
+    --fg:#4ee88a; --fg-dim:#2c8b55; --fg-faint:#1d5236;
+    --bg:#040605; --panel:#070b08; --rule:#12211a;
+    --ink:#c9dcd0; --dim:#6d8a77;
+    --amber:#ffc857; --red:#ff6b5e; --white:#eefaf2;
+    --mono:ui-monospace,"SF Mono","Cascadia Mono","DejaVu Sans Mono",Consolas,monospace;
+    --glow:0 0 8px rgba(78,232,138,.32);
   }
-  * { box-sizing: border-box; }
-  html { scroll-behavior: smooth; }
+  :root[data-theme="rav"]  { --fg:#ffc857; --fg-dim:#a9822f; --fg-faint:#59451a;
+                             --ink:#e8d6ae; --dim:#93805a; --rule:#241d0e;
+                             --glow:0 0 8px rgba(255,200,87,.32); }
+  :root[data-theme="blaa"] { --fg:#63d0ff; --fg-dim:#2b7ba3; --fg-faint:#164457;
+                             --ink:#c6dfec; --dim:#6a8a9b; --rule:#0e2029;
+                             --glow:0 0 8px rgba(99,208,255,.32); }
+  :root[data-theme="hvit"] { --fg:#eefaf2; --fg-dim:#93a49a; --fg-faint:#42504a;
+                             --ink:#cfdad3; --dim:#7d8c84; --rule:#1a221d;
+                             --glow:0 0 8px rgba(238,250,242,.22); }
+
+  * { box-sizing:border-box; }
+  html, body { height:100%; }
   body {
-    margin: 0; background: #000; color: var(--ink); overflow-x: hidden;
-    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-    -webkit-font-smoothing: antialiased; line-height: 1.6;
+    margin:0; background:var(--bg); color:var(--ink); overflow:hidden;
+    font:400 19px/1.55 var(--mono);
+    text-shadow:var(--glow);
+    -webkit-font-smoothing:antialiased;
   }
-  /* One column, ordinary scrolling. This is a project page, not a slideshow. */
-  .screen {
-    position: relative; max-width: 72rem; margin: 0 auto; padding: 5.5rem 2rem;
-    display: block; text-align: left;
+  /* CRT dressing: scanlines and a soft vignette. Cosmetic, never eats a click. */
+  body::after {
+    content:""; position:fixed; inset:0; z-index:60; pointer-events:none;
+    background:
+      repeating-linear-gradient(to bottom, rgba(0,0,0,.16) 0 1px, transparent 1px 4px),
+      radial-gradient(ellipse at center, transparent 58%, rgba(0,0,0,.5) 100%);
   }
-  .screen + .screen { border-top: 1px solid var(--edge); }
-  .mono {
-    font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
-    font-variant-numeric: tabular-nums; letter-spacing: -.045em;
-  }
-  .cue {
-    position: absolute; bottom: 3.5vh; left: 50%; font-size: .7rem;
-    letter-spacing: .24em; text-transform: uppercase; color: var(--faint);
-    animation: bob 2.6s ease-in-out infinite;
-  }
-  @keyframes bob { 0%,100% { transform: translate(-50%,0); } 50% { transform: translate(-50%,.4rem); } }
 
-  /* 1 — the countdown */
-  #clock { font-weight: 600; line-height: .84; font-size: clamp(4.5rem, 20vw, 18rem);
-           transition: color .6s ease; }
-  #clock.late { color: var(--them); }
-  #ctx { margin-top: 2.2rem; color: var(--dim); font-size: clamp(.95rem, 1.5vw, 1.15rem); }
-  #ctx .src { display: block; margin-top: .55rem; font-size: .72rem; letter-spacing: .22em;
-              text-transform: uppercase; color: var(--faint); }
-  #verdict { margin-top: 1.8rem; font-size: clamp(1.2rem, 3vw, 2.2rem); font-weight: 650;
-             letter-spacing: -.02em; color: var(--them); opacity: 0; transition: opacity .9s ease; }
-  #verdict.on { opacity: 1; }
+  a { color:var(--fg); }
 
-  /* 2 — two clocks */
-  .duo { display: grid; grid-template-columns: 1fr auto 1fr; gap: clamp(1rem,4vw,4rem);
-         align-items: center; width: 100%; max-width: 74rem; }
-  .side .who { font-size: .72rem; letter-spacing: .22em; text-transform: uppercase;
-               color: var(--faint); margin-bottom: .9rem; }
-  .side .t { font-size: clamp(2.6rem, 8vw, 7rem); font-weight: 600; line-height: .9; }
-  .side.them .t { color: var(--them); } .side.us .t { color: var(--us); }
-  .gap { color: var(--faint); font-size: .72rem; letter-spacing: .18em; text-transform: uppercase; }
-  .gap b { display: block; margin-top: .45rem; font-size: clamp(1.1rem,2.2vw,1.9rem);
-           color: var(--ink); font-weight: 600; letter-spacing: -.02em; }
-  h2 { font-size: clamp(1.7rem, 4vw, 3.2rem); margin: 0 0 1.2rem; letter-spacing: -.03em; font-weight: 650; }
-  .lede { color: var(--dim); max-width: 68ch; margin: 2rem 0 0; font-size: 1.16rem; line-height: 1.65; }
-  .punch { font-size: 1.16rem; line-height: 1.65; }
-  .step { font-size: 1.05rem; }
-  table.data { font-size: 1rem; }
-  .findings { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
-              gap: 1.6rem; margin-top: 2.5rem; }
-  .finding { border: 1px solid var(--edge); border-radius: 12px; padding: 1.4rem 1.5rem;
-             background: #07090d; }
-  .finding .h { font-size: .72rem; letter-spacing: .18em; text-transform: uppercase;
-                color: var(--faint); }
-  .finding .v { font-size: 1.85rem; font-weight: 650; letter-spacing: -.02em; margin: .5rem 0 .6rem; }
-  .finding p { margin: 0; color: var(--dim); font-size: .95rem; line-height: 1.6; }
-  .finding.bad .v { color: var(--them); }
-  .finding.good .v { color: var(--us); }
+  /* ---------- frame ---------- */
+  #shell { height:100%; display:grid; gap:1px; background:var(--rule);
+           grid-template-columns:minmax(0,1fr) minmax(24rem,36%);
+           grid-template-rows:46px minmax(0,1fr) 13.5rem;
+           grid-template-areas: "bar bar" "con map" "con tail"; }
 
-  .kicker { font-size: .72rem; letter-spacing: .22em; text-transform: uppercase;
-            color: var(--faint); margin: 0 0 1.2rem; }
-  h1 { font-size: clamp(1.9rem, 4.2vw, 3.1rem); line-height: 1.1; margin: 0;
-       letter-spacing: -.03em; font-weight: 650; max-width: 20ch; }
-  .live { margin-top: 3rem; border: 1px solid var(--edge); border-radius: 14px;
-          padding: 1.6rem 1.8rem; background: #07090d; }
-  .live-head { font-size: .7rem; letter-spacing: .2em; text-transform: uppercase;
-               color: var(--faint); margin-bottom: 1.4rem; }
-  .live-foot { color: var(--dim); font-size: .9rem; margin: 1.4rem 0 0; }
-  .steps { display: grid; gap: 1.1rem; margin-top: 2rem; }
-  .step { border-left: 2px solid var(--edge); padding-left: 1.2rem; color: var(--dim); }
-  .step b { color: var(--ink); font-weight: 600; }
-  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
-           gap: 1.4rem; margin-top: 2.8rem; }
-  .fact .n { font-size: 1.7rem; font-weight: 650; letter-spacing: -.02em; }
-  .fact .l { font-size: .78rem; color: var(--faint); margin-top: .2rem; }
+  #bar { grid-area:bar; background:var(--panel); display:flex; align-items:center;
+         gap:1rem; padding:0 1rem; font-size:16px; color:var(--dim);
+         border-bottom:1px solid var(--rule); }
+  #bar .lights { display:flex; gap:7px; }
+  #bar .lights i { width:13px; height:13px; border-radius:50%; }
+  #bar .lights i:nth-child(1) { background:#8a3b34; }
+  #bar .lights i:nth-child(2) { background:#8a7134; }
+  #bar .lights i:nth-child(3) { background:var(--fg-dim); }
+  #bar .title { color:var(--ink); white-space:nowrap; overflow:hidden;
+                text-overflow:ellipsis; }
+  #bar .grow { flex:1; }
+  #bar .on { color:var(--fg); white-space:nowrap; }
+  #bar .on::before { content:"● "; animation:beat 2.4s ease-in-out infinite; }
+  @keyframes beat { 50% { opacity:.35 } }
+  #clock { font-size:18px; color:var(--ink); }
 
-  /* the map is the first thing you see, with the question written over it */
-  #mapscreen { position: relative; height: 100vh; min-height: 34rem; padding: 0;
-               border-bottom: 1px solid var(--edge); }
-  #map { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-  #mapscreen::after {
-    content: ""; position: absolute; inset: 0; pointer-events: none;
-    background: linear-gradient(100deg, rgba(0,0,0,.92) 0%, rgba(0,0,0,.72) 26%, transparent 52%);
-  }
-  #mapscreen .cap { position: absolute; top: 50%; transform: translateY(-50%);
-                    left: 4vw; max-width: 30rem; text-align: left; z-index: 2; }
-  #mapscreen .cap p { color: var(--dim); font-size: .98rem; margin: 1.2rem 0 0; }
-  #mapscreen .cap h2 { text-wrap: balance; }
-  #mapscreen .cap h2 { margin-bottom: .7rem; }
-  #mapscreen .cap p { color: var(--dim); margin: 0; font-size: 1rem; }
-  #chips { position: absolute; left: 2.5rem; bottom: 2rem; display: flex; gap: .5rem;
-           flex-wrap: wrap; z-index: 2; }
-  .chip { border: 1px solid var(--edge); background: rgba(10,13,18,.8); color: var(--dim);
-          border-radius: 999px; padding: .35rem .85rem; font-size: .8rem; cursor: pointer;
-          backdrop-filter: blur(10px); }
-  .chip.on { color: #000; background: var(--ink); border-color: var(--ink); font-weight: 600; }
-  #zoombox { position: absolute; right: 2.5rem; top: 2.5rem; z-index: 3;
-             display: grid; gap: .4rem; }
-  .zb { width: 2.2rem; height: 2.2rem; border-radius: 8px; cursor: pointer;
-        border: 1px solid var(--edge); background: rgba(8,11,16,.85); color: var(--ink);
-        font-size: 1rem; line-height: 1; backdrop-filter: blur(10px); }
-  .zb:hover { background: #131a24; }
-  #scale { position: absolute; right: 2.5rem; bottom: 2rem; z-index: 2; display: flex;
-           align-items: center; gap: .45rem; font-size: .75rem; color: var(--faint); }
-  .sw { width: .8rem; height: .8rem; border-radius: 50%; }
-  #vinfo { position: absolute; right: 6rem; top: 2.5rem; width: min(19rem, 82vw); z-index: 2;
-           background: rgba(8,11,16,.9); border: 1px solid var(--edge); border-radius: 14px;
-           padding: 1rem 1.15rem; backdrop-filter: blur(14px); text-align: left; display: none; }
-  #vinfo.on { display: block; }
-  #vinfo .badge { display: inline-block; border-radius: 6px; padding: .1rem .55rem;
-                  font-weight: 700; color: #000; font-size: .95rem; }
-  #vinfo table { width: 100%; border-collapse: collapse; margin-top: .8rem; font-size: .86rem; }
-  #vinfo td { padding: .3rem 0; border-bottom: 1px solid var(--edge); color: var(--dim); }
-  #vinfo td:last-child { text-align: right; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .pane { background:var(--panel); min-width:0; min-height:0; position:relative;
+          display:flex; flex-direction:column; }
+  .pane > h2 { margin:0; padding:.5rem .9rem; font:400 14px/1.5 var(--mono);
+               letter-spacing:.16em; text-transform:uppercase; color:var(--dim);
+               border-bottom:1px solid var(--rule); display:flex; gap:.7rem; }
+  .pane > h2 .grow { flex:1; }
+  .pane > h2 b { font-weight:400; color:var(--fg-dim); text-transform:none;
+                 letter-spacing:0; }
 
-  /* 4 — the score */
-  .duel2 { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(1.5rem,6vw,6rem);
-           width: 100%; max-width: 68rem; }
-  .big { font-size: clamp(3.5rem, 11vw, 9rem); font-weight: 660; letter-spacing: -.04em; line-height: .95; }
-  .big.them { color: var(--them); } .big.us { color: var(--us); }
-  .who2 { font-size: .74rem; letter-spacing: .22em; text-transform: uppercase; color: var(--faint); }
-  .unit { font-size: .35em; letter-spacing: 0; color: var(--faint); font-weight: 500; }
-  .punch { margin-top: 3.5rem; font-size: clamp(1rem,2vw,1.35rem); color: var(--dim); max-width: 60ch; }
-  .punch b { color: var(--ink); }
+  /* ---------- console ---------- */
+  #con { grid-area:con; }
+  #out { flex:1; min-height:0; overflow-y:auto; overflow-x:auto;
+         padding:1rem 1.1rem 0; scrollbar-width:thin;
+         scrollbar-color:var(--fg-faint) transparent; }
+  #out::-webkit-scrollbar { width:10px; height:10px; }
+  #out::-webkit-scrollbar-thumb { background:var(--fg-faint); }
+  #out .ln { white-space:pre; }
+  #out .wrap { white-space:pre-wrap; max-width:76ch; }
+  #out .blk { margin:0 0 1.2rem; }
+  #out .echo { color:var(--dim); margin:.45rem 0 .6rem; }
+  #out .echo b { color:var(--fg); font-weight:400; }
+  #out .err { color:var(--red); }
+  .g { color:var(--fg); } .w { color:var(--white); } .d { color:var(--dim); }
+  .a { color:var(--amber); } .r { color:var(--red); } .f { color:var(--fg-faint); }
+  .hd { color:var(--dim); }
+  .rule { color:var(--fg-faint); }
 
-  /* 5 — detail */
-  table.data { width: 100%; border-collapse: collapse; font-size: .9rem; max-width: 60rem; margin: 0 auto; }
-  table.data th, table.data td { text-align: right; padding: .55rem .8rem; border-bottom: 1px solid var(--edge); }
-  table.data th:first-child, table.data td:first-child { text-align: left; }
-  table.data th { font-size: .7rem; letter-spacing: .14em; text-transform: uppercase;
-                  color: var(--faint); font-weight: 500; }
-  table.data td { font-variant-numeric: tabular-nums; }
-  td.win { color: var(--us); } td.lose { color: var(--them); }
-  .caveat { margin: 3rem auto 0; max-width: 62ch; color: var(--dim); font-size: .95rem;
-            border-left: 2px solid #f59e0b; padding-left: 1.2rem; text-align: left; }
-  .caveat b { color: var(--ink); }
-  footer { padding: 3rem 5vw 5rem; color: var(--faint); font-size: .82rem; text-align: center; }
-  a { color: #7cc4ff; text-decoration: none; } a:hover { text-decoration: underline; }
-  @media (max-width: 760px) {
-    .duo, .duel2 { grid-template-columns: 1fr; gap: 2.2rem; }
-    #vinfo { position: static; margin: 1rem 4vw; width: auto; }
+  #chips { display:flex; gap:.45rem; flex-wrap:wrap; padding:.6rem 1.1rem .1rem; }
+  #chips button { font:400 16px/1 var(--mono); color:var(--fg-dim); cursor:pointer;
+                  background:transparent; border:1px solid var(--rule); border-radius:4px;
+                  padding:.42rem .65rem; text-shadow:none; }
+  #chips button:hover { color:var(--bg); background:var(--fg); border-color:var(--fg); }
+
+  #line { display:flex; align-items:center; gap:.55rem; padding:.55rem 1.1rem .95rem; }
+  #line .ps { color:var(--fg); white-space:nowrap; }
+  #line .ps b { color:var(--dim); font-weight:400; }
+  #cmd { flex:1; min-width:0; background:transparent; border:0; outline:0;
+         font:inherit; color:var(--white); caret-color:var(--fg); text-shadow:var(--glow); }
+
+  /* ---------- map ---------- */
+  #map { grid-area:map; }
+  #cv { flex:1; width:100%; display:block; cursor:crosshair; }
+  .mapnote { position:absolute; font-size:15px; color:var(--dim); pointer-events:none; }
+  #mapinfo { left:.8rem; bottom:.6rem; }
+  #mapkey { right:.8rem; bottom:.6rem; }
+  #mapkey i { display:inline-block; width:9px; height:9px; border-radius:50%;
+              margin:0 .2rem 0 .6rem; vertical-align:-1px; }
+
+  /* ---------- tail ---------- */
+  #tail { grid-area:tail; }
+  #feed { flex:1; overflow:hidden; padding:.5rem .8rem; }
+  #feed div { white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+              font-size:16px; line-height:1.65; animation:in .35s ease-out; }
+  @keyframes in { from { opacity:0; transform:translateY(4px) } }
+
+  /* ---------- sl ---------- */
+  #sl { position:fixed; z-index:70; left:100vw; top:22vh; white-space:pre;
+        color:var(--fg); font-size:17px; line-height:1.15; pointer-events:none;
+        text-shadow:var(--glow); }
+
+  @media (max-width:960px) {
+    body { overflow:auto; font-size:16.5px; }
+    #shell { height:auto; grid-template-columns:1fr;
+             grid-template-rows:38px 44vh 70vh 12rem;
+             grid-template-areas:"bar" "map" "con" "tail"; }
   }
 </style>
 </head>
 <body>
 
-<section id="mapscreen">
-  <canvas id="map"></canvas>
-  <div class="cap">
-    <p class="kicker">Punktlig · Oslo og Akershus</p>
-    <h1>Kan en modell gjette bedre enn den offisielle sanntidsprognosen?</h1>
-    <p>Hver prikk er en vogn som kjører akkurat nå, farget etter hvor forsinket den er,
-       og den beveger seg mot stoppet den skal til. Linjene ligger der de faktisk går,
-       tegnet av vårt eget arkiv. Klikk på en prikk, dra for å flytte kartet.</p>
+<div id="shell">
+  <div id="bar">
+    <span class="lights"><i></i><i></i><i></i></span>
+    <span class="title">punktlig@arkiv — sanntidsterminal</span>
+    <span class="grow"></span>
+    <span class="on" id="feedstate">&hellip;</span>
+    <span id="clock">--:--:--</span>
   </div>
-  <div id="vinfo"></div>
-  <div id="chips"></div>
-  <div id="zoombox">
-    <button class="zb in" title="Zoom inn">+</button>
-    <button class="zb out" title="Zoom ut">−</button>
-    <button class="zb reset" title="Tilbake til hele nettet">◻</button>
-  </div>
-  <div id="scale">
-    <span class="sw" style="background:#38bdf8"></span>før rutetid
-    <span class="sw" style="background:#e8eef6"></span>i rute
-    <span class="sw" style="background:#fbbf24"></span>1–3 min
-    <span class="sw" style="background:#fb923c"></span>3–6 min
-    <span class="sw" style="background:#ef4444"></span>6+ min
-  </div>
-</section>
 
-<section class="screen">
-  <p class="lede" style="margin:0">
-    Entur publiserer forventet ankomsttid for all kollektivtrafikk i Norge. Prognosen er i
-    praksis en fremskriving: forsinkelsen en vogn har nå antas å gjelde ved hvert stopp
-    videre. Punktlig arkiverer både prognosen og fasiten, hvert minutt, og trener en modell
-    på arkivet.
-  </p>
-  <div class="live">
-    <div class="live-head">Akkurat nå, samme vogn, samme stopp</div>
-    <div class="duo">
-      <div class="side them"><div class="who">Ruter-appen</div><div class="t mono" id="t-them">—</div></div>
-      <div class="gap">uenige om<b id="t-gap">—</b></div>
-      <div class="side us"><div class="who">Punktlig</div><div class="t mono" id="t-us">—</div></div>
-    </div>
-    <p class="live-foot"><span id="ctx-line">henter en avgang</span>.
-      Om noen minutter passerer den, og fasiten havner rett i arkivet.
-      <span id="ctx-src"></span></p>
-  </div>
-</section>
-
-<section class="screen">
-  <h2>Resultatet</h2>
-  <p class="lede" style="margin:0 0 2.5rem">
-    Målt på en hel dag modellen aldri har trent på, over hele nettet.
-    Tallet er hvor mange sekunder hver prognose bommer med i snitt.
-  </p>
-  <div class="duel2">
-    <div><div class="who2">Entur bommer med</div><div class="big them mono" id="s-them">0</div></div>
-    <div><div class="who2">Punktlig bommer med</div><div class="big us mono" id="s-us">0</div></div>
-  </div>
-  <p class="punch" id="punch"></p>
-  <table class="data" id="table" style="margin-top:3rem"></table>
-</section>
-
-<section class="screen">
-  <h2>Fire funn</h2>
-  <p class="lede" style="margin:0">
-    Det interessante ligger ikke i sluttallet, men i hva som kom fram underveis.
-  </p>
-  <div class="findings">
-    <div class="finding bad">
-      <div class="h">Den dummeste gjetningen</div>
-      <div class="v">78,5 mot 80,4 s</div>
-      <p>Å bare anta at forsinkelsen står stille, uten modell og uten læring, bommer
-         mindre enn den offisielle prognosen. På hele nettet, i hver eneste horisontbøtte.</p>
-    </div>
-    <div class="finding">
-      <div class="h">Lineært holder ikke</div>
-      <div class="v">50,5 mot 40,1 s</div>
-      <p>En ridge-regresjon på de samme featurene klarer ikke engang å slå fremskrivningen.
-         Strukturen i dataene er samspill og terskler, ikke en vektet sum. Derfor trær.</p>
-    </div>
-    <div class="finding bad">
-      <div class="h">Der vi taper</div>
-      <div class="v">82,6 mot 63,7 s</div>
-      <p>På vogner som allerede er over seks minutter forsinket er modellen 30 prosent
-         dårligere enn Entur. Det er de tilfellene som betyr mest for en passasjer, og
-         det står her fordi det er sant.</p>
-    </div>
-    <div class="finding good">
-      <div class="h">Noe Entur ikke har</div>
-      <div class="v">77 % treff</div>
-      <p>Modellen kan gi et intervall, ikke bare et tall. Når den sier at ankomsten
-         ligger innenfor et bånd, stemmer det 77 prosent av gangene mot 80 lovet.
-         Den offisielle feeden oppgir ingen usikkerhet i det hele tatt.</p>
+  <div class="pane" id="con">
+    <div id="out"></div>
+    <div id="chips"></div>
+    <div id="line">
+      <span class="ps">punktlig@arkiv<b>:</b>~<b>$</b></span>
+      <input id="cmd" autocomplete="off" autocapitalize="off" autocorrect="off"
+             spellcheck="false" aria-label="kommandolinje">
     </div>
   </div>
-  <p class="lede" style="font-size:.95rem">
-    Tallene for ridge, taps-analysen og intervallene er målt på trikk og T-bane, før
-    innsamlingen ble utvidet til hele nettet. De skal måles på nytt når arkivet er
-    bredt nok, og det står her framfor å bli utelatt.
-  </p>
-</section>
 
-<section class="screen">
-  <h2>Slik er det bygget</h2>
-  <div class="steps">
-    <div class="step"><b>Innsamleren</b> poller Enturs sanntidsfeed hvert minutt, døgnet
-      rundt, og lagrer hvert eneste øyeblikksbilde. Både prognosen for stopp som ligger
-      foran, og fasiten når vogna har passert.</div>
-    <div class="step"><b>Arkivet</b> er det som gjør prosjektet mulig. Entur publiserer
-      ikke historiske prognoser, så det som systemet trodde klokka 08:00 om en ankomst
-      08:25 finnes bare i det øyeblikket, med mindre noen tar vare på det.</div>
-    <div class="step"><b>Avspilleren</b> bygger treningsrader ved å spille arkivet om
-      igjen. Modellen får bare se det som var publisert på spørretidspunktet, håndhevet
-      i tre lag, så den aldri kan lære av fremtiden.</div>
-    <div class="step"><b>Modellen</b> er gradient boosted trees som predikerer forsinkelse
-      per stopp og horisont, og måles mot Enturs egen prognose på en dag den aldri
-      har trent på.</div>
+  <div class="pane" id="map">
+    <h2>kart <b id="mapmode">bane + trikk + tog</b><span class="grow"></span>
+        <b>klikk på en vogn</b></h2>
+    <canvas id="cv"></canvas>
+    <div class="mapnote" id="mapinfo">&hellip;</div>
+    <div class="mapnote" id="mapkey">forsinkelse
+      <i style="background:var(--fg)"></i>&lt;1<i style="background:var(--amber)"></i>1-3
+      <i style="background:var(--red)"></i>&gt;3 min</div>
   </div>
-  <div class="facts" id="facts"></div>
-</section>
 
-<section class="screen">
-  <h2>Forbehold</h2>
-  <div class="caveat" id="caveat"></div>
-</section>
+  <div class="pane" id="tail">
+    <h2>tail -f innsamling.log<span class="grow"></span><b id="tailstate">kjører</b></h2>
+    <div id="feed"></div>
+  </div>
+</div>
 
-<footer>
-  <p id="stamp"></p>
-  <p>Åpen kildekode på <a href="https://github.com/triceraz/Punktlig">github.com/triceraz/Punktlig</a>.
-     Data fra <a href="https://developer.entur.org/">Entur</a> (NLOD) og
-     <a href="https://api.met.no/">MET Norway</a> (CC BY 4.0).
-     Posisjonene er beregnet mellom stoppene, ikke målt. Ikke tilknyttet Entur eller Ruter.</p>
-</footer>
+<div id="sl" hidden></div>
 
 <script>
-const pad = n => String(Math.floor(Math.abs(n))).padStart(2, "0");
-const clockText = sec => (sec < 0 ? "-" : "") +
-  Math.floor(Math.abs(sec) / 60) + ":" + pad(Math.abs(sec) % 60);
-const fmt = n => n.toLocaleString("nb-NO");
-const el = (t, c, x) => { const n = document.createElement(t); if (c) n.className = c;
-  if (x !== undefined) n.textContent = x; return n; };
+"use strict";
+const NB = n => new Intl.NumberFormat("nb-NO").format(n);
+const one = n => n.toLocaleString("nb-NO", {minimumFractionDigits:1, maximumFractionDigits:1});
+const esc = s => String(s).replace(/[&<>"]/g, c =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const padr = (s, n) => String(s).padEnd(n, " ");
+const padl = (s, n) => String(s).padStart(n, " ");
 
-function delayColour(sec) {
-  if (sec < -60) return "#38bdf8";
-  if (sec < 60) return "#e8eef6";
-  if (sec < 180) return "#fbbf24";
-  if (sec < 360) return "#fb923c";
-  return "#ef4444";
+// Seconds -> "4 min 20 s" / "40 s"; delays get an explicit sign.
+const dur = s => { s = Math.round(s); const m = Math.trunc(s / 60);
+                   return m ? `${m} min ${Math.abs(s % 60)} s` : `${s} s`; };
+const signed = s => (s >= 0 ? "+" : "-") + dur(Math.abs(s));
+
+const out = document.getElementById("out");
+const cmd = document.getElementById("cmd");
+let DATA = null;
+
+/* ------------------------------------------------------------------ output */
+
+// Printing happens line by line rather than all at once, which is the whole
+// difference between a terminal and a div. The delay is captured per line at
+// queue time, and any keypress flushes the rest out of the way.
+let queue = [], printing = false, SPEED = 10;
+
+function flush() {
+  while (queue.length) out.appendChild(queue.shift().el);
+  out.scrollTop = out.scrollHeight;
+  printing = false;
 }
 
-// The data file is rewritten as the archive grows, so it must never come from
-// a cache: a stale copy shows yesterday's vehicles as if they were running.
-fetch("data.json?t=" + Date.now(), { cache: "no-store" })
-  .then(r => r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status)))
-  .then(d => { countdown(d); drawMap(d); score(d); facts(d); })
-  .catch(err => {
-    document.getElementById("ctx-line").textContent =
-      "fikk ikke tak i sanntidsdataene akkurat nå (" + (err.message || err) + ")";
-  });
-
-/* ---------- 1 and 2: the clocks ---------- */
-function countdown(d) {
-  const close = d.vehicles.filter(v => v.in_min > 0.8 && v.in_min < 8);
-  const pick = close.filter(v => v.model - v.entur > 45 && v.model - v.entur < 420)
-                    .sort((a, b) => (b.model - b.entur) - (a.model - a.entur))[0]
-    || close.sort((a, b) => Math.abs(b.entur - b.model) - Math.abs(a.entur - a.model))[0]
-    || d.vehicles[0];
-  if (!pick) return;
-
-  const t0 = Date.now(), enturSec = pick.in_min * 60;
-  const modelSec = enturSec + (pick.model - pick.entur);
-  document.getElementById("ctx-line").textContent =
-    "Linje " + pick.line + " mot " + (pick.stop || "neste stopp");
-  document.getElementById("t-gap").textContent =
-    Math.round(Math.abs(pick.entur - pick.model)) + " sekunder";
-
-  const src = document.getElementById("ctx-src");
-  (function tick() {
-    const gone = (Date.now() - t0) / 1000, left = enturSec - gone;
-    document.getElementById("t-them").textContent = clockText(Math.round(left));
-    document.getElementById("t-us").textContent = clockText(Math.round(modelSec - gone));
-    if (left <= 0) src.textContent = "Appen sa at den skulle vært her.";
-    requestAnimationFrame(tick);
-  })();
+function pump() {
+  const next = queue.shift();
+  if (!next) { printing = false; return; }
+  printing = true;
+  out.appendChild(next.el);
+  out.scrollTop = out.scrollHeight;
+  setTimeout(pump, next.speed);
 }
 
-function facts(d) {
-  const a = d.archive;
-  if (!a) return;
-  const days = a.since && a.until
-    ? Math.max(1, Math.round((new Date(a.until) - new Date(a.since)) / 864e5)) : null;
-  const box = document.getElementById("facts");
-  [[fmt(a.calls), "arkiverte observasjoner"],
-   [fmt(a.polls), "innsamlinger"],
-   [fmt(a.stops), "holdeplasser"],
-   [fmt(a.lines), "linjer"]].forEach(f => {
-    const n = el("div", "fact");
-    n.append(el("div", "n", f[0]), el("div", "l", f[1]));
-    box.append(n);
+function push(el) {
+  queue.push({el, speed:SPEED});
+  if (!printing) pump();
+}
+
+function print(html, cls) {
+  const el = document.createElement("div");
+  el.className = cls || "ln";
+  el.innerHTML = html;
+  push(el);
+}
+
+const blank = () => print("&nbsp;");
+const wrap  = t => print(t, "wrap");
+const block = () => { const el = document.createElement("div");
+                      el.className = "blk"; push(el); };
+
+function heading(text) {
+  print(`<span class="rule">${"─".repeat(3)}</span> <span class="w">${esc(text)}</span> ` +
+        `<span class="rule">${"─".repeat(Math.max(2, 56 - text.length))}</span>`);
+  blank();
+}
+
+function meterRows(rows, worst, width) {
+  rows.forEach(r => {
+    const n = Math.round(r.v / worst * width);
+    print(`<span class="d">${padr(r.k, 11)}</span>` +
+          `<span class="${r.c}">${"█".repeat(n)}</span>` +
+          `<span class="f">${"·".repeat(Math.max(0, width - n))}</span>` +
+          `<span class="${r.c}"> ${padl(one(r.v), 6)}</span>`);
   });
 }
 
-/* ---------- 3: the map ---------- */
-function drawMap(d) {
-  const canvas = document.getElementById("map"), ctx = canvas.getContext("2d");
-  const stops = d.network.stops, routes = d.network.routes, vehicles = d.vehicles;
-  const ORDER = ["metro", "tram", "bus", "water", "rail"];
-  const modes = ORDER.filter(m => routes.some(r => r.mode === m));
-  const NAMES = { metro: "T-bane", tram: "Trikk", bus: "Buss", water: "Båt", rail: "Tog" };
-  // Trains run to Lillestrøm and beyond; letting them into the frame shrinks
-  // Oslo to a knot in the middle, so they start off and the view is always
-  // framed on the city's own rail network.
-  const FRAME = ["metro", "tram"];
-  const on = new Set(modes.filter(m => m !== "rail"));
-  let view = null, hover = null, zoom = 1, panX = 0, panY = 0;
-  const loadedAt = Date.now();
+function table(head, rows, classes) {
+  const widths = head.map((h, i) =>
+    Math.max(h.length, ...rows.map(r => String(r[i]).length)));
+  // Widths are measured on raw text and escaped after padding, so an
+  // ampersand in a stop name breaks neither the column nor the markup.
+  const fmt = (cells, cls) => cells.map((c, i) =>
+    `<span class="${cls ? cls[i] || "" : ""}">` +
+    esc(i === 0 ? padr(c, widths[i]) : padl(c, widths[i])) + `</span>`).join("  ");
+  print(`<span class="hd">${fmt(head)}</span>`);
+  print(`<span class="rule">${widths.map(w => "─".repeat(w)).join("──")}</span>`);
+  rows.forEach(r => print(fmt(r.map(String), classes)));
+}
 
-  const chips = document.getElementById("chips");
-  modes.forEach(m => {
-    const c = el("button", "chip" + (on.has(m) ? " on" : ""), NAMES[m] || m);
-    c.onclick = () => {
-      on.has(m) ? on.delete(m) : on.add(m);
-      c.classList.toggle("on");
-      project();  // the view frames whatever is showing
-    };
-    chips.append(c);
-  });
+/* -------------------------------------------------------------- vehicle math */
 
-  function project() {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const w = canvas.clientWidth, h = canvas.clientHeight;
-    if (w < 2 || h < 2) { view = null; return; }
-    canvas.width = w * dpr; canvas.height = h * dpr;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const mx = lon => lon * Math.PI / 180;
-    const my = lat => Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360));
-    // Bounds come from what is actually shown. Measuring all five thousand
-    // stops while drawing only the metro shrinks the network to a blob in the
-    // middle of an empty screen, which is exactly how it looked.
-    let a0 = 1e9, a1 = -1e9, b0 = 1e9, b1 = -1e9, seen = 0;
-    for (const r of routes) {
-      if (!FRAME.includes(r.mode)) continue;
-      for (const p of r.path) {
-        const s = stops[p], a = mx(s[0]), b = my(s[1]);
-        if (a < a0) a0 = a; if (a > a1) a1 = a; if (b < b0) b0 = b; if (b > b1) b1 = b;
-        seen++;
-      }
-    }
-    if (seen < 2) { view = null; return; }
-    const s = Math.min(w * .84 / (a1 - a0), h * .84 / (b1 - b0));
-    const ox = (w - (a1 - a0) * s) / 2, oy = (h - (b1 - b0) * s) / 2;
-    view = { w, h, s,
-      x: lon => ((mx(lon) - a0) * s + ox) * zoom + panX,
-      y: lat => (h - ((my(lat) - b0) * s + oy)) * zoom + panY };
+// The exported numbers per vehicle: `now` is how late it runs right now,
+// `entur`/`model` are the two predicted delays at its next stop, and `eta`
+// is seconds until Ruter's expected arrival, all measured at export time.
+// Arrivals shown to people drift with the age of the file; past a few
+// minutes a countdown would list departures that already left, so the page
+// switches to snapshot wording instead of quietly lying.
+const STALE_AFTER = 300;
+const fileAge = () => Date.now() / 1000 - DATA.t0;
+const isFresh = () => fileAge() < STALE_AFTER;
+
+function arrivals(v) {
+  const drift = isFresh() ? fileAge() : 0;
+  const ruter = v.eta - drift;
+  return {ruter, ours: ruter + (v.model - v.entur)};
+}
+
+const MODE_NB = {metro:"T-bane", tram:"trikk", rail:"tog", water:"båt", bus:"buss"};
+
+/* ------------------------------------------------------------------ commands */
+
+const COMMANDS = {}, HIDDEN = {};
+function def(name, summary, run, opts) {
+  (opts && opts.hidden ? HIDDEN : COMMANDS)[name] = {summary, run, args:opts && opts.args};
+}
+const lookup = name => COMMANDS[name] || HIDDEN[name];
+
+/* --- se --- */
+
+def("resultat", "hvor mye hver av dem bommer", () => {
+  const w = DATA.score.weighted, b = DATA.score.buckets;
+  heading("gjennomsnittlig bom, sekunder");
+  meterRows([
+    {k:"rutetabell", v:w.timetable, c:"f"},
+    {k:"naiv",       v:w.naive,     c:"d"},
+    {k:"ruter",      v:w.entur,     c:"r"},
+    {k:"punktlig",   v:w.model,     c:"g"},
+  ], w.timetable, 44);
+  blank();
+  wrap(`«Bom» er avstanden mellom anslått og faktisk ankomst. Ruter-appens anslag
+bommer i snitt <span class="r">${one(w.entur)} sekunder</span>. Punktlig bommer <span class="g">${one(w.model)}</span>, på nøyaktig
+de samme sanntidsmeldingene. Det er <span class="w">${(100 - w.model / w.entur * 100).toFixed(1).replace(".", ",")} prosent mindre</span>, målt på
+${NB(DATA.score.rows)} avganger modellen aldri har sett under trening.`);
+  blank();
+  heading("per hvor langt fram man gjetter");
+  table(
+    ["horisont", "rutetabell", "naiv", "ruter", "punktlig", "diff"],
+    b.map(r => [r.horizon.replace("min", " min"), one(r.timetable), one(r.naive),
+                one(r.entur), one(r.model), "-" + Math.round(r.entur - r.model) + " s"])
+      .concat([["vektet", one(w.timetable), one(w.naive), one(w.entur), one(w.model),
+                "-" + Math.round(w.entur - w.model) + " s"]]),
+    ["", "f", "d", "r", "g", "g"]
+  );
+  blank();
+  wrap(`<span class="d">Avstanden vokser med horisonten. Rett før avgang vet begge omtrent det
+samme; tjue minutter unna er det bare mønstre å gå på, og da vinner den
+som har lest arkivet. Skriv <span class="g">naiv</span> for det rareste funnet.</span>`);
+  block();
+});
+
+def("naiv", "funnet som gjør vondt", () => {
+  const w = DATA.score.weighted;
+  heading("advarsel");
+  wrap(`<span class="a">!</span> Den enkleste tenkelige gjetningen er å anta at forsinkelsen står
+  stille: er vogna fire minutter sen nå, er den fire minutter sen når
+  den når deg. Ingen modell, ingen data, én linje kode.`);
+  blank();
+  meterRows([
+    {k:"naiv",  v:w.naive, c:"a"},
+    {k:"ruter", v:w.entur, c:"r"},
+  ], w.timetable, 44);
+  blank();
+  wrap(`  Den gjetningen bommer <span class="w">${(w.entur - w.naive).toFixed(1).replace(".", ",")} sekunder mindre</span> enn anslaget i appen,
+  over hele materialet.`);
+  blank();
+  wrap(`<span class="d">  Det er ikke et angrep på noen. Sanntidssystemene skal dekke alt fra
+  ferge til T-bane og kan ikke pusses på hver enkelt strekning. Men det
+  er verdt å vite at det påkostede ikke automatisk slår det enkle.</span>`);
+  block();
+});
+
+def("arkiv", "hva maskinen har samlet inn", () => {
+  const a = DATA.archive;
+  heading("arkivet");
+  [["anrop arkivert", NB(a.calls)],
+   ["spørringer", NB(a.polls)],
+   ["linjer fulgt", String(a.lines)],
+   ["holdeplasser", NB(a.stops)],
+   ["dekker fra", new Date(a.since).toLocaleString("nb-NO", {dateStyle:"short", timeStyle:"short"})],
+   ["dekker til", new Date(a.until).toLocaleString("nb-NO", {dateStyle:"short", timeStyle:"short"})],
+   ["treningsrader", NB(DATA.score.trained_on)],
+   ["fasitrader", NB(DATA.score.rows)],
+  ].forEach(([k, v]) =>
+    print(`<span class="d">${padr(k, 16)}</span><span class="f">${".".repeat(20)}</span> ` +
+          `<span class="w">${v}</span>`));
+  blank();
+  const modes = {};
+  for (const v of DATA.vehicles) modes[v.mode] = (modes[v.mode] || 0) + 1;
+  heading("ute å kjøre akkurat nå");
+  table(["type", "kjøretøy"],
+    Object.entries(modes).sort((x, y) => y[1] - x[1])
+      .map(([m, n]) => [MODE_NB[m] || m, String(n)]), ["w", "g"]);
+  blank();
+  wrap(`<span class="d">Innsamleren spør hvert minutt, døgnet rundt, og lagrer hele svaret,
+ikke bare det siste. Det gir noe sanntids-API-et ikke gir: en logg over
+hva som var trodd på hvert tidspunkt, ikke bare hva som til slutt
+skjedde. Uten den loggen kan dette ikke måles i det hele tatt.</span>`);
+  block();
+});
+
+def("modell", "hva som gjetter, kort fortalt", () => {
+  heading("modellen, kort");
+  wrap(`Punktlig er en modell som har lest arkivet og lært hvordan det pleier
+å gå: hvor lang tid strekningene faktisk tar, hvor det alltid er sent i
+rushen, hvordan en forsinkelse utvikler seg fra stopp til stopp.`);
+  blank();
+  wrap(`Når den gjetter på en avgang får den bare vite det appen din også vet
+i samme sekund. Ingen hemmelige data, ingen fasit. Bare bedre bruk av
+det som allerede er der.`);
+  blank();
+  wrap(`<span class="d">Det var den korte versjonen. Skriv <span class="g">metode</span> for den ordentlige:
+features, no-lookahead-regelen, splitten og de målte ablasjonene.</span>`);
+  block();
+});
+
+def("metode", "hele metoden, for de som har peiling", () => {
+  heading("metode");
+  wrap(`<span class="w">Modellklasse.</span> LightGBM, gradient-boostede beslutningstrær med L1-mål.
+Trær framfor nevrale nett fordi dataene er tabulære med blandede typer
+og hull: trær håndterer manglende verdier naturlig, trenger ingen
+normalisering, og L1 optimerer MAE direkte, robust mot halehendelser.`);
+  blank();
+  wrap(`<span class="w">Prediksjonsoppgaven.</span> Gitt et øyeblikksbilde av en tur ved poll-tid T:
+anslå forsinkelsen ved hvert framtidig stopp. En rad per (øyeblikk,
+framtidig stopp), med horisonten som feature, slik at samme modell
+dekker alt fra 0 til 45 minutter fram.`);
+  blank();
+  print(`<span class="w">Features.</span>`);
+  [
+    ["tilstand", "forsinkelse nå, trend siste stopp, alder på observasjonen"],
+    ["rute", "planlagt kjøretid mot faktisk typisk kjøretid (slakk)"],
+    ["nettverk", "forsinkelsesnivå på holdeplassen og linja siste 30 min"],
+    ["kalender", "ukedag, time på døgnet"],
+    ["vær", "MET-varselet som var utstedt ved T, aldri et nyere"],
+    ["identitet", "linje, retning, holdeplass som kategoriske"],
+  ].forEach(([k, v]) =>
+    print(`  <span class="d">${padr(k, 10)}</span><span>${esc(v)}</span>`));
+  if (DATA.score.importance) {
+    blank();
+    print(`<span class="w">Vekt i den trente modellen</span> <span class="d">(andel av total gain)</span>`);
+    Object.entries(DATA.score.importance).slice(0, 8).forEach(([k, share]) => {
+      const n = Math.round(share * 40);
+      print(`  <span class="d">${padr(k, 22)}</span><span class="g">${"█".repeat(Math.max(1, n))}</span>` +
+            `<span class="d"> ${(share * 100).toFixed(1).replace(".", ",")} %</span>`);
+    });
+  }
+  blank();
+  wrap(`<span class="w">No-lookahead, håndhevet strukturelt.</span> Hver treningsrad bygges kun av
+data med tidsstempel før eller lik T: sanntidsbildet fra poll T,
+værvarselet utstedt senest T, og historikk-aggregater fra tidsbøtter
+som var LUKKET før T, siden en bøtte som fortsatt fylles kan inneholde
+observasjoner fra etter T. Fasiten hentes fra en strengt senere poll.
+Bryter man én av disse ser modellen strålende ut og er verdiløs.`);
+  blank();
+  wrap(`<span class="w">Splitt.</span> Journey-atomisk på driftsdøgn: siste døgn holdes helt utenfor
+trening, og ingen tur bidrar med rader på begge sider. Radvis tilfeldig
+splitt ville lekket, fordi rader fra samme tur sekunder fra hverandre
+er nesten-duplikater.`);
+  blank();
+  wrap(`<span class="w">Målt, ikke antatt.</span> Hver featuregruppe er ablert på identiske data.
+Buntingsfeatures (kjøretøyet foran) og avviksmeldinger målte som nuller
+og er parkert til arkivet spenner flere uker. Kvantilvarianter (p10/p50/p90)
+er trent og kalibrert; blending med appens eget anslag gir ytterligere
+et par sekunder, men hovedmodellen holdes uavhengig av det.`);
+  blank();
+  wrap(`<span class="d">Kildekoden er åpen: <a href="https://github.com/triceraz/Punktlig" target="_blank" rel="noopener">github.com/triceraz/Punktlig</a></span>`);
+  block();
+});
+
+def("kilder", "hvem som egentlig lager tallene", () => {
+  heading("hvem som lager tallene");
+  wrap(`Anslagene folk ser i appen lages av operatørenes egne sanntidssystemer:
+<span class="w">Ruter</span> for buss, trikk, T-bane og båt i Oslo og Akershus, og <span class="w">Vy,
+Flytoget, SJ og Go-Ahead</span> for togene. <span class="w">Entur</span> er statens samleplattform
+som distribuerer alle strømmene videre, til appene og til oss.`);
+  blank();
+  wrap(`Punktlig leser SIRI-ET-strømmen fra Entur hvert minutt, samme kilde som
+appene bruker. Rundt ni av ti målinger i arkivet gjelder Ruters område,
+så på denne siden står det «Ruter» der det strengt tatt er «operatøren,
+distribuert av Entur». Værdata er MET sitt varsel for Oslo.`);
+  block();
+});
+
+def("grenser", "hva dette ikke kan si", () => {
+  heading("begrensninger");
+  [
+    "arkivet dekker foreløpig få dager: helg mot hverdag, ferie mot",
+    "skoleår og snø mot barmark er ikke representert ennå",
+    "dekker Ruters område; togene følges også videre utover det",
+    "sier ingenting om innstilte avganger, bare forsinkelser",
+    "målt på avganger modellen aldri har sett, men fra samme dager,",
+    "så tallene er ærlige men ikke endelige",
+  ].forEach(t => print(`<span class="r">-</span> <span>${esc(t)}</span>`));
+  block();
+});
+
+/* --- utforsk --- */
+
+def("holdeplass", "avgangstavle med begge anslag", (arg) => {
+  const stops = {};
+  for (const v of DATA.vehicles)
+    if (v.stop && v.entur != null && v.model != null) (stops[v.stop] ||= []).push(v);
+
+  if (!arg) {
+    heading("holdeplasser med flest avganger i bildet");
+    const top = Object.entries(stops).sort((a, b) => b[1].length - a[1].length).slice(0, 12);
+    table(["holdeplass", "avganger"], top.map(([s, v]) => [s, String(v.length)]), ["w", "d"]);
+    blank();
+    wrap(`<span class="d">Skriv <span class="g">holdeplass ${esc((top[0] ? top[0][0] : "Jernbanetorget").toLowerCase())}</span>. Tab fullfører navnet.</span>`);
+    return block();
   }
 
-  function render(t) {
-    if (!view || view.w !== canvas.clientWidth || view.h !== canvas.clientHeight) {
-      project();
-      if (!view) { requestAnimationFrame(render); return; }
-    }
-    ctx.clearRect(0, 0, view.w, view.h);
-    ctx.lineCap = "round"; ctx.lineJoin = "round";
+  const q = arg.toLowerCase();
+  const name = Object.keys(stops).find(s => s.toLowerCase() === q)
+            || Object.keys(stops).find(s => s.toLowerCase().startsWith(q))
+            || Object.keys(stops).find(s => s.toLowerCase().includes(q));
+  if (!name) {
+    print(`<span class="err">ingen holdeplass som ligner «${esc(arg)}» i bildet nå. ` +
+          `<span class="g">holdeplass</span> gir en liste.</span>`);
+    return block();
+  }
 
-    for (const r of routes) {
-      if (!on.has(r.mode)) continue;
+  const rows = stops[name].map(v => ({v, arr:arrivals(v)}))
+    .filter(x => x.arr.ruter > -60).sort((a, b) => a.arr.ours - b.arr.ours).slice(0, 8);
+  heading(name + (isFresh() ? "" : "  (øyeblikksbilde fra " +
+          new Date(DATA.t0 * 1000).toLocaleTimeString("nb-NO", {hour12:false}) + ")"));
+  if (!rows.length) {
+    print(`<span class="d">ingen avganger igjen i denne fila for ${esc(name)}.</span>`);
+    return block();
+  }
+  wrap(`<span class="d">To ankomsttider for samme vogn: den appen viser, og vår. Kolonnen
+lengst til høyre er hvor sen vogna er akkurat nå.</span>`);
+  blank();
+  table(["linje", "appen sier", "punktlig sier", "sen nå"],
+    rows.map(({v, arr}) => [
+      `${v.line} mot ${v.dest || "?"}`,
+      arr.ruter <= 0 ? "nå" : "om " + dur(arr.ruter),
+      arr.ours  <= 0 ? "nå" : "om " + dur(arr.ours),
+      v.now == null ? "?" : signed(v.now)]),
+    ["w", "r", "g", "a"]);
+  blank();
+  const disagree = rows.filter(({v}) => Math.abs(v.model - v.entur) >= 30).length;
+  wrap(`<span class="d">${disagree ? `Uenige om ${disagree} av ${rows.length} her, med minst et halvt minutt.`
+                                    : `Her er de stort sett enige akkurat nå.`}
+Prøv <span class="g">linje ${esc(String(rows[0].v.line).toLowerCase())}</span> for å følge vogna.</span>`);
+  block();
+});
+
+def("linje", "alle vogner på en linje", (arg) => {
+  if (!arg) {
+    heading("linjer med flest vogner ute");
+    const by = {};
+    for (const v of DATA.vehicles) (by[v.line] ||= []).push(v);
+    const top = Object.entries(by).sort((a, b) => b[1].length - a[1].length).slice(0, 14);
+    table(["linje", "type", "vogner ute"],
+      top.map(([l, vs]) => [l, MODE_NB[vs[0].mode] || vs[0].mode, String(vs.length)]),
+      ["w", "d", "g"]);
+    return block();
+  }
+  const hits = DATA.vehicles.filter(v => String(v.line).toLowerCase() === arg.toLowerCase());
+  if (!hits.length) {
+    print(`<span class="err">linje «${esc(arg)}» er ikke ute i denne fila. ` +
+          `<span class="g">linje</span> gir en liste.</span>`);
+    return block();
+  }
+  heading(`linje ${hits[0].line} — ${MODE_NB[hits[0].mode] || hits[0].mode}, ` +
+          `${hits.length} ${hits.length === 1 ? "vogn" : "vogner"} ute`);
+  wrap(`<span class="d">Én rad per vogn, ikke én rute: disse ${hits.length === 1 ? "" : hits.length + " "}kjører samtidig på hver
+sin kant av byen. «Sen nå» er målt; de to siste er hva appen og
+Punktlig tror forsinkelsen blir ved vognas neste stopp.</span>`);
+  blank();
+  table(["vogn", "neste stopp", "sen nå", "appen tror", "punktlig tror"],
+    hits.slice(0, 14).map(v => [
+      "mot " + (v.dest || "?"),
+      v.stop || "?",
+      v.now == null ? "?" : signed(v.now),
+      v.entur == null ? "?" : signed(v.entur),
+      v.model == null ? "?" : signed(v.model)]),
+    ["w", "d", "a", "r", "g"]);
+  block();
+});
+
+def("kart", "styr kartet: alt, bane, tog, buss, av", (arg) => {
+  const modes = {
+    alt:   {set:["metro","tram","rail","water","bus"], label:"alt"},
+    bane:  {set:["metro","tram","rail"],               label:"bane + trikk + tog"},
+    tbane: {set:["metro","tram"],                      label:"t-bane + trikk"},
+    tog:   {set:["rail"],                              label:"tog"},
+    buss:  {set:["bus"],                               label:"buss"},
+    av:    {set:[],                                    label:"av"},
+  };
+  const pick = modes[(arg || "").toLowerCase()];
+  if (!pick) {
+    const list = Object.keys(modes).map(k => `<span class="g">${k}</span>`).join(", ");
+    print(arg ? `<span class="err">kjenner ikke «${esc(arg)}».</span> <span class="d">prøv: ${list}</span>`
+              : `<span class="d">kart ${list}</span>`);
+    return block();
+  }
+  DRAW = new Set(pick.set);
+  document.getElementById("mapmode").textContent = pick.label;
+  print(`<span class="d">kart: ${pick.label}. klikk på en vogn for detaljer her i konsollen.</span>`);
+  block();
+});
+
+/* --- styr --- */
+
+def("tema", "fosforfarge: grønn, rav, blå, hvit", (arg) => {
+  const themes = {"grønn":"", "gronn":"", "rav":"rav", "blå":"blaa", "bla":"blaa", "hvit":"hvit"};
+  const key = (arg || "").toLowerCase();
+  if (!(key in themes)) { print(`<span class="err">tema grønn | rav | blå | hvit</span>`); return block(); }
+  themes[key] ? document.documentElement.setAttribute("data-theme", themes[key])
+              : document.documentElement.removeAttribute("data-theme");
+  print(`<span class="d">tema: ${esc(key)}</span>`);
+  block();
+});
+
+def("tail", "loggen nederst: på, av", (arg) => {
+  tailOn = (arg || "").toLowerCase() !== "av";
+  document.getElementById("tailstate").textContent = tailOn ? "kjører" : "stanset";
+  print(`<span class="d">tail: ${tailOn ? "kjører" : "stanset"}</span>`);
+  block();
+});
+
+def("tøm", "tøm skjermen", () => { queue = []; out.innerHTML = ""; });
+
+def("om", "maskinen, kildene, hvem", () => {
+  const a = DATA.archive;
+  heading("om punktlig");
+  wrap(`En stasjonær PC i Oslo har spurt Entur hvert eneste minutt siden
+${new Date(a.since).toLocaleDateString("nb-NO", {dateStyle:"long"})}: hva tror dere om alle avganger i Ruters område
+akkurat nå? Svaret arkiveres, alt sammen, ${NB(a.calls)} målinger så langt.
+Etterpå sammenlignes det som ble trodd med det som faktisk skjedde.`);
+  blank();
+  wrap(`Oppå arkivet er det trent en modell som gjetter ankomsttid bedre enn
+anslaget i appen, uten tilgang til noe appen ikke har. Alt på denne
+siden regnes fra ekte, arkiverte tall. Ingenting er anslått for hånd.`);
+  blank();
+  print(`<span class="d">${padr("datakilder", 12)}</span><span>Entur SIRI-ET/SX (sanntid), MET (vær)</span>`);
+  print(`<span class="d">${padr("innsamling", 12)}</span><span>hvert minutt, døgnet rundt, siden ${new Date(a.since).toLocaleDateString("nb-NO")}</span>`);
+  print(`<span class="d">${padr("kildekode", 12)}</span><a href="https://github.com/triceraz/Punktlig" target="_blank" rel="noopener">github.com/triceraz/Punktlig</a>`);
+  print(`<span class="d">${padr("laget av", 12)}</span><span>Andreas, med et arkiv og en påstand om at dette går an</span>`);
+  blank();
+  wrap(`<span class="d">Skriv <span class="g">kilder</span> for hvem som egentlig lager anslagene, og
+<span class="g">metode</span> for hvordan modellen er bygget og målt.</span>`);
+  block();
+});
+
+def("hjelp", "denne listen", () => {
+  heading("kommandoer");
+  const groups = [
+    ["se",      ["resultat", "naiv", "arkiv", "modell", "metode", "kilder", "grenser"]],
+    ["utforsk", ["holdeplass", "linje", "kart"]],
+    ["styr",    ["tema", "tail", "tøm", "om"]],
+  ];
+  groups.forEach(([g, names]) => {
+    print(`<span class="a">${g}</span>`);
+    names.forEach(n => print(`  <span class="g">${padr(n + (COMMANDS[n].args ? " " + COMMANDS[n].args : ""), 24)}</span>` +
+                             `<span class="d">${COMMANDS[n].summary}</span>`));
+    blank();
+  });
+  wrap(`<span class="d">Tab fullfører kommandoer og holdeplassnavn. Pil opp henter historikk.
+Enter med tom linje gjentar ingenting. Og en terminal er en terminal:
+<span class="g">echo</span>, <span class="g">whoami</span>, <span class="g">date</span> og venner virker, og et par ting til for den
+som leter.</span>`);
+  block();
+});
+
+/* --- klassikerne og påskeeggene --- */
+
+def("echo", "", a => { print(`<span>${esc(a || "")}</span>`); block(); }, {hidden:true});
+def("whoami", "", () => {
+  wrap(`en stasjonær pc i oslo som aldri får sove, fordi trikken aldri sover`);
+  block();
+}, {hidden:true});
+def("date", "", () => {
+  print(`<span>${new Date().toLocaleString("nb-NO", {dateStyle:"full", timeStyle:"medium"})}</span>`);
+  block();
+}, {hidden:true});
+def("pwd", "", () => { print(`<span>/hjem/punktlig/arkiv</span>`); block(); }, {hidden:true});
+def("uname", "", a => {
+  print(`<span>${a === "-a" ? "Punktlig arkiv 1.0 stasjonær-pc x86_64 GNU/Trikk"
+                            : "Punktlig"}</span>`);
+  block();
+}, {hidden:true});
+def("ls", "", () => {
+  print(`<span class="g">arkiv/</span>  <span class="g">modell/</span>  <span>data.json</span>  <span class="d">forsinkelser.txt  unnskyldninger.txt</span>`);
+  block();
+}, {hidden:true});
+def("cat", "", a => {
+  const files = {
+    "forsinkelser.txt": `alle sammen. hver eneste en. det er liksom hele poenget.`,
+    "unnskyldninger.txt": `signalfeil ved nationaltheatret\nvognmangel\nfeil på infrastrukturen\n<span class="d">(fila vokser fortsatt)</span>`,
+    "data.json": `for stor til å cate. åpne <a href="data.json">data.json</a> i stedet.`,
+  };
+  const hit = files[(a || "").trim()];
+  hit ? hit.split("\n").forEach(l => print(l.startsWith("<") ? l : `<span>${esc(l)}</span>`))
+      : print(`<span class="err">cat: ${esc(a || "hva da")}: finnes ikke</span>`);
+  block();
+}, {hidden:true});
+def("sudo", "", () => {
+  print(`<span class="err">punktlig er ikke i sudoers-fila. hendelsen blir rapportert.</span>`);
+  print(`<span class="d">(til hvem? til ruter? de har nok å stri med.)</span>`);
+  block();
+}, {hidden:true});
+def("ping", "", a => {
+  const host = (a || "entur.no").trim();
+  [1, 2, 3].forEach(i =>
+    print(`<span class="d">64 bytes fra ${esc(host)}: icmp_seq=${i} tid=${(20 + Math.random() * 30).toFixed(1)} ms</span>`));
+  print(`<span>--- ${esc(host)} svarer. det er mer enn man kan si om 31-bussen ---</span>`);
+  block();
+}, {hidden:true});
+def("cowsay", "", a => {
+  const msg = a || "mø. bussen er sen.";
+  const top = "_".repeat(msg.length + 2), bot = "-".repeat(msg.length + 2);
+  [` ${top}`, `< ${esc(msg)} >`, ` ${bot}`,
+   `        \\   ^__^`, `         \\  (oo)\\_______`,
+   `            (__)\\       )\\/\\`, `                ||----w |`,
+   `                ||     ||`].forEach(l => print(`<span>${l}</span>`));
+  block();
+}, {hidden:true});
+def("exit", "", () => {
+  wrap(`<span class="d">logout... nei. terminalen blir her. det gjør forsinkelsene også.</span>`);
+  block();
+}, {hidden:true});
+def("sl", "", () => {
+  // The classic typo-punisher, except this train is of course delayed too.
+  const el = document.getElementById("sl");
+  el.hidden = false;
+  el.textContent = [
+    "      ====        ________                ___________",
+    "  _D _|  |_______/        \\__I_I_____===__|_________|",
+    "   |(_)---  |   H\\________/ |   |        =|___ ___|  ",
+    "   /     |  |   H  |  |     |   |         ||_| |_||  ",
+    "  |      |  |   H  |__--------------------| [___] |  ",
+    "  | ________|___H__/__|_____/[][]~\\_______|       |  ",
+    "  |/ |   |-----------I_____I [][] []  D   |=======|__",
+    "__/ =| o |=-~~\\  /~~\\  /~~\\  /~~\\ ____Y___________|__",
+    " |/-=|___|=    ||    ||    ||    |_____/~\\___/       ",
+    "  \\_/      \\O=====O=====O=====O_/      \\_/           ",
+  ].join("\n");
+  const start = performance.now(), dist = innerWidth + el.offsetWidth + 100;
+  const step = t => {
+    const k = (t - start) / 6000;
+    if (k >= 1) { el.hidden = true; return; }
+    el.style.transform = `translateX(${-dist * k}px)`;
+    requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+  print(`<span class="d">toget er dessverre ca 4 minutter forsinket. som alt annet.</span>`);
+  block();
+}, {hidden:true});
+
+const ALIAS = {help:"hjelp", clear:"tøm", tom:"tøm", score:"resultat", stop:"holdeplass",
+               stopp:"holdeplass", about:"om", map:"kart", limits:"grenser",
+               why:"modell", hvorfor:"modell", man:"hjelp", entur:"kilder", ruter:"kilder"};
+
+/* ------------------------------------------------------------------ the line */
+
+let history = [], hpos = -1;
+
+function run(raw) {
+  const text = raw.trim();
+  print(`punktlig@arkiv:~$ <b>${esc(text)}</b>`, "echo");
+  if (!text) return;
+  const [head, ...rest] = text.split(/\s+/);
+  const key = ALIAS[head.toLowerCase()] || head.toLowerCase();
+  const c = lookup(key);
+  if (!c) {
+    print(`<span class="err">ukjent kommando: ${esc(head)}.</span> <span class="d">skriv <span class="g">hjelp</span>.</span>`);
+    return block();
+  }
+  c.run(rest.join(" "));
+}
+
+function complete() {
+  const text = cmd.value, parts = text.split(/\s+/);
+  if (parts.length <= 1) {
+    const hits = Object.keys(COMMANDS).filter(k => k.startsWith(parts[0].toLowerCase()));
+    if (hits.length === 1) cmd.value = hits[0] + (COMMANDS[hits[0]].args ? " " : "");
+    else if (hits.length > 1) { print(`<span class="d">${hits.join("   ")}</span>`); block(); }
+    return;
+  }
+  const key = ALIAS[parts[0].toLowerCase()] || parts[0].toLowerCase();
+  if (key !== "holdeplass") return;
+  const q = parts.slice(1).join(" ").toLowerCase();
+  const names = [...new Set(DATA.vehicles.filter(v => v.stop).map(v => v.stop))];
+  const hits = names.filter(n => n.toLowerCase().startsWith(q));
+  if (hits.length === 1) cmd.value = "holdeplass " + hits[0];
+  else if (hits.length > 1) { print(`<span class="d">${hits.slice(0, 12).map(esc).join("   ")}</span>`); block(); }
+}
+
+cmd.addEventListener("keydown", ev => {
+  if (printing && ev.key.length === 1) flush();
+  if (ev.key === "Enter") {
+    const v = cmd.value; cmd.value = "";
+    if (v.trim()) { history.unshift(v.trim()); hpos = -1; }
+    run(v);
+  } else if (ev.key === "Tab") {
+    ev.preventDefault(); complete();
+  } else if (ev.key === "ArrowUp") {
+    ev.preventDefault();
+    if (hpos + 1 < history.length) cmd.value = history[++hpos];
+  } else if (ev.key === "ArrowDown") {
+    ev.preventDefault();
+    cmd.value = hpos > 0 ? history[--hpos] : (hpos = -1, "");
+  } else if (ev.key === "c" && ev.ctrlKey) {
+    if (!getSelection().toString()) { flush(); cmd.value = ""; }
+  }
+});
+addEventListener("mouseup", () => {
+  if (!getSelection().toString() && !matchMedia("(pointer: coarse)").matches) cmd.focus();
+});
+addEventListener("keydown", ev => {
+  if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  if (document.activeElement !== cmd && ev.key.length === 1) cmd.focus();
+});
+
+document.getElementById("chips").addEventListener("click", ev => {
+  const b = ev.target.closest("button"); if (!b) return;
+  cmd.value = ""; run(b.dataset.run);
+});
+
+/* ------------------------------------------------------------------ the map */
+
+let DRAW = new Set(["metro", "tram", "rail"]);
+const FRAME = new Set(["metro", "tram"]);
+const WEIGHT = {metro:2.1, tram:1.6, rail:1.4, water:1.1, bus:.55};
+// The hubs a local recognises the shape by; drawn as faint labels. Downtown
+// keeps one name, since every central stop overlaps every other there.
+const HUBS = ["Jernbanetorget", "Majorstuen", "Tøyen",
+              "Lillestrøm", "Sandvika", "Ski stasjon"];
+const merc = (lon, lat) => [lon * Math.PI / 180,
+                            Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360))];
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+let view = null, drawnVehicles = [];
+
+function fit() {
+  const box = cv.getBoundingClientRect();
+  if (!box.width || !box.height) return false;
+  const dpr = devicePixelRatio || 1;
+  cv.width = Math.round(box.width * dpr); cv.height = Math.round(box.height * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  // Frame on metro + tram: that is the shape of the city. Rail and bus get
+  // drawn into the same window and clip at the edge.
+  const S = DATA.network.stops;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const r of DATA.network.routes) {
+    if (!FRAME.has(r.mode)) continue;
+    for (const i of r.path) {
+      const [x, y] = merc(S[i][0], S[i][1]);
+      x0 = Math.min(x0, x); x1 = Math.max(x1, x);
+      y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+    }
+  }
+  const pad = 22;
+  const k = Math.min((box.width - pad * 2) / (x1 - x0), (box.height - pad * 2) / (y1 - y0));
+  view = {k, x0, y1, w:box.width, h:box.height,
+          ox:(box.width - (x1 - x0) * k) / 2, oy:(box.height - (y1 - y0) * k) / 2};
+  return true;
+}
+const px = (lon, lat) => {
+  const [x, y] = merc(lon, lat);
+  return [view.ox + (x - view.x0) * view.k, view.oy + (view.y1 - y) * view.k];
+};
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+function draw() {
+  requestAnimationFrame(draw);
+  if (!DATA) return;
+  if (!view && !fit()) return;
+  ctx.clearRect(0, 0, view.w, view.h);
+  const S = DATA.network.stops;
+  // Theme colours once per frame, not per vehicle.
+  const skin = {route:css("--fg-dim"), faint:css("--fg-faint"), dim:css("--dim"),
+                ok:css("--fg"), warn:css("--amber"), bad:css("--red")};
+
+  for (const mode of ["bus", "water", "rail", "tram", "metro"]) {
+    if (!DRAW.has(mode)) continue;
+    ctx.strokeStyle = mode === "bus" ? skin.faint : skin.route;
+    ctx.lineWidth = WEIGHT[mode]; ctx.lineJoin = ctx.lineCap = "round";
+    ctx.globalAlpha = mode === "bus" ? .5 : mode === "rail" ? .65 : .9;
+    for (const r of DATA.network.routes) {
+      if (r.mode !== mode || r.path.length < 2) continue;
       ctx.beginPath();
-      for (let i = 0; i < r.path.length; i++) {
-        const s = stops[r.path[i]];
-        i ? ctx.lineTo(view.x(s[0]), view.y(s[1])) : ctx.moveTo(view.x(s[0]), view.y(s[1]));
-      }
-      // Buses carry the operator's own red and green, which is exactly the
-      // scale the dots use for how late something is. Two meanings on one
-      // colour is unreadable, so the bus web goes neutral and the delay scale
-      // keeps red to itself.
-      const bus = r.mode === "bus";
-      ctx.lineWidth = bus ? .8 : r.weight * 1.25;
-      ctx.globalAlpha = bus ? .5 : .95;
-      ctx.strokeStyle = bus ? "#243040" : r.colour;
+      r.path.forEach((idx, i) => {
+        const [x, y] = px(S[idx][0], S[idx][1]);
+        i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      });
       ctx.stroke();
     }
-    ctx.globalAlpha = 1;
+  }
+  ctx.globalAlpha = 1;
 
-    // Station markers and a line badge at the end of the route: the two things
-    // every transit map has and a plot of coordinates does not.
-    for (const r of routes) {
-      if (!on.has(r.mode) || r.mode === "bus") continue;
-      ctx.fillStyle = "#05070a"; ctx.strokeStyle = r.colour; ctx.lineWidth = 1.4;
-      for (const p of r.path) {
-        const s = stops[p], x = view.x(s[0]), y = view.y(s[1]);
-        ctx.beginPath(); ctx.arc(x, y, 2.1, 0, 6.284); ctx.fill(); ctx.stroke();
-      }
-      if (r.mode !== "metro") continue;
-      const end = stops[r.path[r.path.length - 1]];
-      const bx = view.x(end[0]), by = view.y(end[1]);
-      ctx.fillStyle = r.colour;
-      ctx.beginPath(); ctx.arc(bx, by, 8.5, 0, 6.284); ctx.fill();
-      ctx.fillStyle = "#05070a"; ctx.font = "600 11px system-ui, sans-serif";
-      ctx.textAlign = "center"; ctx.textBaseline = "middle";
-      ctx.fillText(r.line, bx, by + .5);
-    }
-
-    // Vehicles keep moving between exports: each one knows the stop it is
-    // heading for and how long it has, so the browser walks it along instead
-    // of letting it sit still until the next file arrives. A dot with no line
-    // under it reads as noise, so they follow the same filter as the routes.
-    const age = (Date.now() - loadedAt) / 1000;
-    const pulse = .5 + .5 * Math.sin(t / 850);
-    for (const v of vehicles) {
-      if (!on.has(v.mode)) continue;
-      let lon = v.lon, lat = v.lat;
-      if (v.tlon !== undefined && v.eta > 0) {
-        const k = Math.min(1, age / v.eta);
-        lon += (v.tlon - v.lon) * k;
-        lat += (v.tlat - v.lat) * k;
-      }
-      v._x = lon; v._y = lat;
-      const x = view.x(lon), y = view.y(lat), c = delayColour(v.now);
-      if (x < -20 || y < -20 || x > view.w + 20 || y > view.h + 20) continue;
-      const r = v === hover ? 6 : 2.9;
-      ctx.beginPath(); ctx.arc(x, y, r + 4 + pulse * 1.6, 0, 6.284);
-      ctx.fillStyle = c + "26"; ctx.fill();
-      ctx.beginPath(); ctx.arc(x, y, r, 0, 6.284);
-      ctx.fillStyle = c; ctx.fill();
-    }
-    requestAnimationFrame(render);
+  // Hub labels, drawn from the shared stop table by name. Each name once:
+  // the table holds one row per platform, and eight overlapping copies of
+  // the same word render as a smudge.
+  ctx.font = "13px " + css("--mono");
+  ctx.fillStyle = skin.dim;
+  const labelled = new Set();
+  for (const s of S) {
+    if (!HUBS.includes(s[2]) || labelled.has(s[2])) continue;
+    const [x, y] = px(s[0], s[1]);
+    if (x < 0 || y < 0 || x > view.w || y > view.h) continue;
+    labelled.add(s[2]);
+    ctx.fillText(s[2], x + 5, y - 4);
   }
 
-  function nearest(px, py) {
-    let best = null, bd = 400;
-    for (const v of vehicles) {
-      if (!on.has(v.mode)) continue;
-      const dx = view.x(v._x ?? v.lon) - px, dy = view.y(v._y ?? v.lat) - py;
-      const dist = dx * dx + dy * dy;
-      if (dist < bd) { bd = dist; best = v; }
-    }
-    return best;
+  const now = Date.now() / 1000;
+  drawnVehicles = [];
+  for (const v of DATA.vehicles) {
+    if (!DRAW.has(v.mode)) continue;
+    const t = v.eta > 0 ? Math.min(1, Math.max(0, (now - DATA.t0) / v.eta)) : 0;
+    const [x, y] = px(v.lon + (v.tlon - v.lon) * t, v.lat + (v.tlat - v.lat) * t);
+    if (x < -10 || y < -10 || x > view.w + 10 || y > view.h + 10) continue;
+    drawnVehicles.push({x, y, v});
+    ctx.beginPath(); ctx.arc(x, y, v.mode === "bus" ? 3 : 4, 0, 7);
+    ctx.fillStyle = v.now == null ? skin.dim
+                  : v.now < 60 ? skin.ok : v.now < 180 ? skin.warn : skin.bad;
+    ctx.fill();
   }
-  canvas.onmousemove = ev => {
-    const r = canvas.getBoundingClientRect();
-    hover = view && nearest(ev.clientX - r.left, ev.clientY - r.top);
-    canvas.style.cursor = hover ? "pointer" : "default";
-  };
-  canvas.onclick = ev => {
-    const r = canvas.getBoundingClientRect();
-    const v = view && nearest(ev.clientX - r.left, ev.clientY - r.top);
-    const box = document.getElementById("vinfo");
-    if (!v) { box.classList.remove("on"); return; }
-    const colour = (routes.find(x => x.line === v.line && x.mode === v.mode) || {}).colour || "#888";
-    box.classList.add("on"); box.innerHTML = "";
-    const head = el("div");
-    const badge = el("span", "badge", v.line); badge.style.background = colour;
-    head.append(badge, el("span", "", "  " + (v.stop || "")));
-    box.append(head);
-    const table = el("table");
-    [["Forsinket nå", Math.round(v.now) + " s"], ["Framme om", v.in_min + " min"],
-     ["Entur tror", v.entur + " s"], ["Punktlig tror", v.model + " s"]]
-      .forEach(p => { const tr = el("tr");
-        tr.append(el("td", "", p[0]), el("td", "", p[1])); table.append(tr); });
-    box.append(table);
-  };
-  // The wheel belongs to the page. A full-height map that swallows scrolling
-  // traps the reader on the first screen, so zooming lives on the buttons and
-  // on ctrl-wheel, the way map embeds have done it for years.
-  function zoomBy(k, cx, cy) {
-    const next = Math.max(1, Math.min(14, zoom * k));
-    const f = next / zoom;
-    if (cx === undefined) { cx = canvas.clientWidth / 2; cy = canvas.clientHeight / 2; }
-    panX = cx - (cx - panX) * f; panY = cy - (cy - panY) * f;
-    zoom = next;
+  const worst = DATA.vehicles.filter(v => DRAW.has(v.mode) && v.now != null)
+                             .reduce((m, v) => Math.max(m, v.now), 0);
+  document.getElementById("mapinfo").textContent =
+    DRAW.size ? `${drawnVehicles.length} vogner i bildet, verste ${dur(worst)} sen`
+              : "kartet er av";
+}
+addEventListener("resize", () => { view = null; });
+
+// Click a dot: the vehicle reports to the console, in console form.
+cv.addEventListener("click", ev => {
+  const box = cv.getBoundingClientRect();
+  const mx = ev.clientX - box.left, my = ev.clientY - box.top;
+  let best = null, bestD = 12 * 12;
+  for (const d of drawnVehicles) {
+    const dd = (d.x - mx) ** 2 + (d.y - my) ** 2;
+    if (dd < bestD) { bestD = dd; best = d.v; }
   }
-  canvas.addEventListener("wheel", ev => {
-    if (!ev.ctrlKey && !ev.metaKey) return;  // let the page scroll
-    ev.preventDefault();
-    const r = canvas.getBoundingClientRect();
-    zoomBy(Math.exp(-ev.deltaY * .0016), ev.clientX - r.left, ev.clientY - r.top);
-  }, { passive: false });
+  if (!best) return;
+  flush();
+  const arr = arrivals(best);
+  print(`kart-klikk${isFresh() ? "" : "  (øyeblikksbilde fra " +
+        new Date(DATA.t0 * 1000).toLocaleTimeString("nb-NO", {hour12:false}) + ")"}`, "echo");
+  print(`<span class="w">linje ${esc(best.line)} mot ${esc(best.dest || "?")}</span> ` +
+        `<span class="d">(${MODE_NB[best.mode] || best.mode}), neste stopp ${esc(best.stop || "?")}</span>`);
+  print(`  <span class="d">${padr("sen akkurat nå", 16)}</span><span class="a">${best.now == null ? "?" : signed(best.now)}</span>`);
+  print(`  <span class="d">${padr("appen sier", 16)}</span><span class="r">${arr.ruter <= 0 ? "nå" : "om " + dur(arr.ruter)}</span>` +
+        `<span class="d">  (tror ${signed(best.entur)} ved stoppet)</span>`);
+  print(`  <span class="d">${padr("punktlig sier", 16)}</span><span class="g">${arr.ours <= 0 ? "nå" : "om " + dur(arr.ours)}</span>` +
+        `<span class="d">  (tror ${signed(best.model)})</span>`);
+  block();
+});
 
-  const zoomBox = document.getElementById("zoombox");
-  zoomBox.querySelector(".in").onclick = () => zoomBy(1.5);
-  zoomBox.querySelector(".out").onclick = () => zoomBy(1 / 1.5);
-  zoomBox.querySelector(".reset").onclick = () => { zoom = 1; panX = 0; panY = 0; };
+/* ------------------------------------------------------------------ the tail */
 
-  let drag = null;
-  canvas.addEventListener("mousedown", ev => { drag = { x: ev.clientX, y: ev.clientY }; });
-  addEventListener("mouseup", () => { drag = null; });
-  addEventListener("mousemove", ev => {
-    if (!drag) return;
-    panX += ev.clientX - drag.x; panY += ev.clientY - drag.y;
-    drag = { x: ev.clientX, y: ev.clientY };
-  });
-  canvas.addEventListener("dblclick", () => { zoom = 1; panX = 0; panY = 0; });
-
-  project(); requestAnimationFrame(render);
-  addEventListener("resize", project);
+// One line per departure the model has just priced: what the app says, what
+// we say, and the gap, in seconds, so the disagreement is legible.
+let tailOn = true, feedAt = 0;
+function emit() {
+  if (!tailOn || !DATA) return;
+  const pool = DATA.vehicles.filter(v => v.stop && v.entur != null && v.model != null);
+  if (!pool.length) return;
+  const v = pool[feedAt++ % pool.length];
+  const gap = v.model - v.entur;
+  const cls = v.now == null ? "d" : v.now > 180 ? "r" : v.now > 60 ? "a" : "g";
+  // Compact durations, so the disagreement at the end survives the pane width.
+  const sd = s => { s = Math.round(s); const m = Math.trunc(Math.abs(s) / 60);
+                    return (s < 0 ? "-" : "+") + (m ? m + "m" : "") + Math.abs(s % 60) + "s"; };
+  const el = document.createElement("div");
+  el.innerHTML =
+    `<span class="d">${new Date().toLocaleTimeString("nb-NO", {hour:"2-digit", minute:"2-digit"})}</span> ` +
+    `<span class="${cls}">${esc(padr(v.line, 5))}</span>` +
+    `<span>${esc(padr("mot " + String(v.dest || v.stop).slice(0, 18), 23))}</span>` +
+    `<span class="d">app </span><span class="r">${esc(padl(sd(v.entur), 7))}</span>` +
+    `<span class="d">  vi </span><span class="g">${esc(padl(sd(v.model), 7))}</span>` +
+    (Math.abs(gap) >= 30
+      ? `<span class="a">  uenige ${dur(Math.abs(gap))}</span>`
+      : `<span class="f">  enige</span>`);
+  const feed = document.getElementById("feed");
+  feed.appendChild(el);
+  while (feed.childElementCount > 7) feed.removeChild(feed.firstChild);
 }
 
-/* ---------- 4 and 5: the score ---------- */
-function score(d) {
-  const w = d.score.weighted;
-  const run = (id, to) => {
-    const node = document.getElementById(id), t0 = performance.now();
-    (function step(t) {
-      const k = Math.min(1, (t - t0) / 1300), e = 1 - Math.pow(1 - k, 3);
-      node.innerHTML = (to * e).toFixed(1) + '<span class="unit"> s</span>';
-      if (k < 1) requestAnimationFrame(step);
-    })(t0);
-  };
-  const seen = new WeakSet();
-  new IntersectionObserver(es => es.forEach(e => {
-    if (e.isIntersecting && !seen.has(e.target)) {
-      seen.add(e.target); run("s-them", w.entur); run("s-us", w.model);
-    }
-  }), { threshold: .4 }).observe(document.getElementById("s-us"));
+setInterval(() => document.getElementById("clock").textContent =
+  new Date().toLocaleTimeString("nb-NO", {hour12:false}), 1000);
 
-  const gain = ((w.entur - w.model) / w.entur * 100).toFixed(0);
-  document.getElementById("punch").innerHTML =
-    "Det er <b>" + gain + " prosent</b> bedre, på hver eneste horisont. " +
-    "Og her er det ubehagelige: den dummeste tenkelige gjetningen, bare anta at " +
-    "forsinkelsen vogna har nå også gjelder ved hvert stopp videre, bommer med <b>" +
-    w.naive + " sekunder</b>. Altså mindre enn den offisielle prognosen.";
+/* ------------------------------------------------------------------ boot */
 
-  const t = document.getElementById("table");
-  t.innerHTML = "<thead><tr><th>Horisont</th><th>Prediksjoner</th><th>Rutetabell</th>" +
-    "<th>Naiv</th><th>Entur</th><th>Punktlig</th></tr></thead>";
-  const body = el("tbody");
-  d.score.buckets.forEach(b => {
-    const tr = el("tr");
-    tr.append(el("td", "", b.horizon.replace("min", " min")), el("td", "", fmt(b.n)),
-      el("td", "", b.timetable + " s"), el("td", "", b.naive + " s"),
-      el("td", b.entur < b.naive ? "" : "lose", b.entur + " s"),
-      el("td", b.model < b.entur ? "win" : "lose", b.model + " s"));
-    body.append(tr);
-  });
-  const sum = el("tr");
-  sum.append(el("td", "", "Vektet"), el("td", "", fmt(d.score.rows)),
-    el("td", "", w.timetable + " s"), el("td", "", w.naive + " s"),
-    el("td", "lose", w.entur + " s"), el("td", "win", w.model + " s"));
-  body.append(sum); t.append(body);
-
-  document.getElementById("caveat").innerHTML =
-    "<b>Forbeholdene, foran og ikke i en fotnote.</b> Arkivet er noen få døgn gammelt, " +
-    "så tallene vil flytte seg. Modellen er trent på en firedel av avgangene, fordi hele " +
-    "datasettet ennå ikke får plass i minnet under bygging. Togdata finnes bare i " +
-    "valideringen, ikke i treningen. Posisjonene på kartet er regnet ut mellom stoppene, " +
-    "ikke målt.";
-
-  document.getElementById("stamp").textContent =
-    "Data hentet " + new Date(d.generated_at).toLocaleString("nb-NO",
-      { dateStyle: "long", timeStyle: "short" }) + " · modellen trent på " +
-    fmt(d.score.trained_on) + " rader";
+function boot() {
+  const w = DATA.score.weighted, a = DATA.archive;
+  SPEED = 24;
+  [
+    ` ____   _   _  _   _  _  __ _____  _      ___   ____`,
+    `|  _ \\ | | | || \\ | || |/ /|_   _|| |    |_ _| / ___|`,
+    `| |_) || | | ||  \\| || ' /   | |  | |     | | | |  _`,
+    `|  __/ | |_| || |\\  || . \\   | |  | |___  | | | |_| |`,
+    `|_|     \\___/ |_| \\_||_|\\_\\  |_|  |_____||___| \\____|`,
+  ].forEach(l => print(`<span class="g">${l}</span>`));
+  blank();
+  print(`<span class="d">sanntidsarkiv for kollektivtrafikk · Oslo og Akershus</span>`);
+  blank();
+  SPEED = 13;
+  print(`<span class="f">[</span><span class="g">ok</span><span class="f">]</span> ` +
+        `<span class="d">arkiv ......... ${NB(a.calls)} målinger, ${a.lines} linjer, ${NB(a.stops)} holdeplasser</span>`);
+  print(`<span class="f">[</span><span class="g">ok</span><span class="f">]</span> ` +
+        `<span class="d">modell ........ trent på ${NB(DATA.score.trained_on)} rader</span>`);
+  print(`<span class="f">[</span><span class="g">ok</span><span class="f">]</span> ` +
+        `<span class="d">sanntid ....... ${DATA.vehicles.length} vogner ute akkurat nå</span>`);
+  blank();
+  SPEED = 10;
+  heading("kort fortalt");
+  wrap(`Ruter-appen sier «2 min». Alle vet hva det betyr: kanskje 2, kanskje 6.
+Denne maskinen har notert hvert eneste anslag appen har vist og målt det
+mot hva som faktisk skjedde. Appen bommer i snitt <span class="r">${one(w.entur)} sekunder</span>.
+En modell trent på arkivet bommer <span class="g">${one(w.model)}</span>, med nøyaktig samme
+informasjon. Og den flaueste målingen: å anta at forsinkelsen aldri
+endrer seg bommer <span class="a">${one(w.naive)}</span>. Mindre enn appen.`);
+  blank();
+  wrap(`<span class="d">Skriv <span class="g">hjelp</span>, trykk på en knapp under, eller klikk en vogn i kartet.</span>`);
+  block();
 }
+
+/* ------------------------------------------------------------------ start */
+
+fetch("data.json?t=" + Date.now(), {cache:"no-store"})
+  .then(r => r.json())
+  .then(d => {
+    DATA = d;
+    DATA.t0 = new Date(d.generated_at).getTime() / 1000;
+    if (d.score.importance) {
+      DATA.score.importance = Object.fromEntries(
+        Object.entries(d.score.importance).sort((a2, b2) => b2[1] - a2[1]));
+    }
+
+    document.getElementById("chips").innerHTML =
+      [["resultat", "resultat"], ["naiv", "naiv"], ["holdeplass", "holdeplass"],
+       ["linje", "linje"], ["arkiv", "arkiv"], ["modell", "modell"],
+       ["metode", "metode"], ["hjelp", "hjelp"]]
+      .map(([label, r]) => `<button data-run="${r}">${label}</button>`).join("");
+
+    const stamp = () => {
+      const mins = Math.round(fileAge() / 60);
+      document.getElementById("feedstate").textContent =
+        mins < 2 ? "sanntid" : `data fra ${new Date(DATA.t0 * 1000)
+          .toLocaleTimeString("nb-NO", {hour12:false})} (${mins} min siden)`;
+    };
+    stamp(); setInterval(stamp, 30_000);
+
+    boot();
+    draw();
+    for (let i = 0; i < 7; i++) emit();
+    setInterval(emit, 1700);
+    if (!matchMedia("(pointer: coarse)").matches) cmd.focus();
+
+    const deep = decodeURIComponent(location.hash.slice(1));
+    const head = deep.split(" ")[0].toLowerCase();
+    if (head && (lookup(head) || ALIAS[head])) setTimeout(() => run(deep), 900);
+  })
+  .catch(() => {
+    print(`<span class="err">kunne ikke laste data.json. arkivet svarer ikke akkurat nå.</span>`);
+  });
 </script>
 </body>
 </html>
