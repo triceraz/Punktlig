@@ -25,6 +25,41 @@ from pathlib import Path
 
 from .config import DATA_DIR
 
+
+def step_aside():
+    """Run this process at background priority for as long as it lives.
+
+    The collector shares one disk with the replay and the training run, and
+    those read gigabytes at a time. Collection then starves: polls that take
+    six seconds started arriving minutes apart, and the archive grew holes
+    that no amount of retrying can fill afterwards. A missed poll is gone for
+    good; a slower training run is only slower. On Windows the background
+    mode lowers I/O priority as well as CPU, which is the part that matters
+    here, and it is released automatically when the process exits.
+    """
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        PROCESS_MODE_BACKGROUND_BEGIN = 0x00100000
+        try:
+            kernel32 = ctypes.windll.kernel32
+            # The process handle is a pointer. Left to ctypes' default of a
+            # C int it is truncated on a 64-bit build, the call fails, and
+            # the priority silently stays where it was.
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+            kernel32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+            kernel32.SetPriorityClass.restype = wintypes.BOOL
+            kernel32.SetPriorityClass(kernel32.GetCurrentProcess(),
+                                      PROCESS_MODE_BACKGROUND_BEGIN)
+        except Exception:
+            pass
+    else:
+        try:
+            os.nice(10)
+        except Exception:
+            pass
+
 # Two separate concerns, so two locks. The heavy analysis jobs must not run
 # at the same time as each other; the collector must not run at the same time
 # as another collector. They never contend with one another.
@@ -94,6 +129,10 @@ def heavy(label, wait=True, poll_seconds=20, data_dir=None, log=print,
         handle.truncate()
         handle.write(f"{label} pid={os.getpid()}\n".encode())
         handle.flush()
+        if name == LOCK_NAME:
+            # Analysis jobs yield the disk to the collector. The collector
+            # takes a different lock and keeps its normal priority.
+            step_aside()
         try:
             yield True
         finally:
