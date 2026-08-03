@@ -66,6 +66,31 @@ class UpcomingRowsTest(unittest.TestCase):
         self.assertTrue(live)
         self.assertEqual({r["polled_at"] for r in live}, {NEWEST})
 
+    def test_polls_outside_the_window_are_left_out(self):
+        # The window was compared against SQLite's datetime(), which formats
+        # with a space where the stored value has a T. Text-compared, the T
+        # sorts later, so every poll of the same date slipped through and
+        # journeys seen four hours ago were drawn as current traffic.
+        from punktlig import db
+        from punktlig.predict import recent_polls
+
+        conn = db.connect(self.archive)
+        self.addCleanup(conn.close)
+        stale = db.insert_poll(conn, polled_at=f"{D}T04:00:00+00:00",
+                               feed="et", dataset="RUT", n_calls=5)
+        conn.commit()
+        self.assertNotIn(stale, recent_polls(conn, "RUT"))
+
+    def test_the_window_is_anchored_to_the_newest_poll(self):
+        # Anchored to the clock, a gap in collection would return nothing at
+        # all; anchored to the newest poll it returns the last full picture.
+        from punktlig import db
+        from punktlig.predict import recent_polls
+
+        conn = db.connect(self.archive)
+        self.addCleanup(conn.close)
+        self.assertTrue(recent_polls(conn, "RUT"))
+
     def test_journeys_missing_from_the_newest_poll_are_still_included(self):
         # The seeded replay journeys appear in earlier polls only. Losing
         # them is exactly the bug: a map with thirty vehicles instead of

@@ -14,7 +14,7 @@ the answer has not happened yet.
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import db
@@ -61,12 +61,19 @@ def recent_polls(conn, dataset, minutes=RECENT_POLLS_MINUTES):
     newest = latest_poll(conn, dataset)
     if not newest:
         return []
+    # The cutoff is computed here rather than by SQLite's datetime(), which
+    # returns "2026-08-03 17:37:18" while the column holds
+    # "2026-08-03T17:37:18.123456+00:00". Compared as text the T sorts after
+    # the space, so every row of the same date passed the filter and polls
+    # four hours old were treated as current traffic.
+    cutoff = (datetime.fromisoformat(newest[1])
+              - timedelta(minutes=minutes)).isoformat()
     # An unrecorded call count is not the same as an empty poll: rows written
     # before the counter existed, and rows repaired by reparse, carry NULL.
     # A genuinely empty poll costs nothing here, since it contributes no rows.
     sql = ("SELECT poll_id FROM poll WHERE feed = 'et' AND error IS NULL "
-           "AND COALESCE(n_calls, 1) > 0 AND polled_at > datetime(?, ?)")
-    params = [newest[1], f"-{int(minutes)} minutes"]
+           "AND COALESCE(n_calls, 1) > 0 AND polled_at > ?")
+    params = [cutoff]
     if dataset:  # absent means every codespace, as it does for latest_poll
         sql += " AND dataset = ?"
         params.append(dataset)
