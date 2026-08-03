@@ -32,6 +32,15 @@ from .dataset import (
 MODEL_DIR = Path(DB_PATH).parent / "model"
 
 
+# The feed is polled with a requestorId, so most responses are deltas: only
+# the journeys whose estimates changed since last time. A single poll is
+# therefore not a picture of the network, it is a list of what moved, and
+# reading only the newest one showed 34 vehicles on a map that should have
+# had four hundred. Recent polls are stitched together instead, newest value
+# winning per journey, which is what the delta stream is meant to be used for.
+RECENT_POLLS_MINUTES = 20
+
+
 def latest_poll(conn, dataset=None):
     """The newest successful ET poll, optionally within one codespace."""
     sql = ("SELECT poll_id, polled_at, dataset FROM poll "
@@ -41,6 +50,27 @@ def latest_poll(conn, dataset=None):
         sql += " AND dataset = ?"
         params.append(dataset)
     return conn.execute(sql + " ORDER BY polled_at DESC LIMIT 1", params).fetchone()
+
+
+def recent_polls(conn, dataset, minutes=RECENT_POLLS_MINUTES):
+    """Poll ids for one codespace within `minutes` of its newest poll.
+
+    Anchored to the newest poll rather than to the clock, so a gap in
+    collection yields the last complete picture instead of nothing at all.
+    """
+    newest = latest_poll(conn, dataset)
+    if not newest:
+        return []
+    # An unrecorded call count is not the same as an empty poll: rows written
+    # before the counter existed, and rows repaired by reparse, carry NULL.
+    # A genuinely empty poll costs nothing here, since it contributes no rows.
+    sql = ("SELECT poll_id FROM poll WHERE feed = 'et' AND error IS NULL "
+           "AND COALESCE(n_calls, 1) > 0 AND polled_at > datetime(?, ?)")
+    params = [newest[1], f"-{int(minutes)} minutes"]
+    if dataset:  # absent means every codespace, as it does for latest_poll
+        sql += " AND dataset = ?"
+        params.append(dataset)
+    return [row[0] for row in conn.execute(sql + " ORDER BY polled_at", params)]
 
 
 def upcoming_rows(archive_path=DB_PATH, parquet_dir=PARQUET_DIR, dataset=None,
@@ -57,9 +87,7 @@ def upcoming_rows(archive_path=DB_PATH, parquet_dir=PARQUET_DIR, dataset=None,
     try:
         poll_ids = []
         for name in wanted:
-            newest = latest_poll(conn, name)
-            if newest:
-                poll_ids.append(newest[0])
+            poll_ids.extend(recent_polls(conn, name))
         if not poll_ids:
             return []
         marks = ", ".join("?" for _ in poll_ids)

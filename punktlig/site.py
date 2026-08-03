@@ -182,7 +182,13 @@ def vehicles(conn, rows, now=None):
     for row in rows:
         key = (row["journey_ref"], row["operating_date"])
         current = by_journey.get(key)
-        if current is None or row["order_no"] < current["order_no"]:
+        # Several polls now feed in, because each one is only a delta. The
+        # newest sighting of a journey wins outright, and within that sighting
+        # the nearest stop ahead is where the vehicle is. Taking the lowest
+        # stop number across all polls would put vehicles back at stations
+        # they left ten minutes ago.
+        rank = (row["polled_at"], -row["order_no"])
+        if current is None or rank > (current["polled_at"], -current["order_no"]):
             by_journey[key] = row
         tail = heading_for.get(key)
         if tail is None or row["order_no"] > tail[0]:

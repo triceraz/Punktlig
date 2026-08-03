@@ -55,9 +55,23 @@ class UpcomingRowsTest(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def test_uses_the_newest_snapshot_only(self):
+    def test_it_predicts_from_the_newest_sighting_of_each_journey(self):
+        # The feed is polled with a requestorId, so a poll carries only the
+        # journeys that changed. Reading the newest poll alone left most
+        # vehicles off the map; recent polls are stitched together instead,
+        # and the newest sighting of a journey is the one that counts.
         self.assertTrue(self.rows)
-        self.assertEqual({r["polled_at"] for r in self.rows}, {NEWEST})
+        live = [r for r in self.rows
+                if r["journey_ref"] == "RUT:ServiceJourney:live"]
+        self.assertTrue(live)
+        self.assertEqual({r["polled_at"] for r in live}, {NEWEST})
+
+    def test_journeys_missing_from_the_newest_poll_are_still_included(self):
+        # The seeded replay journeys appear in earlier polls only. Losing
+        # them is exactly the bug: a map with thirty vehicles instead of
+        # four hundred.
+        others = {r["journey_ref"] for r in self.rows} - {"RUT:ServiceJourney:live"}
+        self.assertTrue(others)
 
     def test_rows_have_no_label_but_do_have_features(self):
         row = self.rows[0]
