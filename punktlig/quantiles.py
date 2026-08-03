@@ -24,7 +24,7 @@ import numpy as np
 from .config import DATA_DIR
 from .dataset import OUT_PATH as DATASET_PATH
 from .report import BUCKETS, fmt
-from .train import CATEGORICAL, FEATURES, PARAMS, day_split, encode, load_rows
+from .train import CATEGORICAL, FEATURES, PARAMS, load_matrix
 
 MODEL_DIR = DATA_DIR / "model-quantiles"
 QUANTILES = (0.1, 0.5, 0.9)
@@ -81,17 +81,23 @@ def coverage(y, lo, hi):
     return inside / len(y)
 
 
-def train_quantiles(dataset_path, valid_days=1, quantiles=QUANTILES):
-    rows = load_rows(dataset_path)
-    result = day_split(rows, valid_days)
-    if result:
-        rows, split, valid_dates = result
+def train_quantiles(dataset_path, valid_days=1, quantiles=QUANTILES, valid_on=None):
+    """Fit one model per quantile on the same features as the point model.
+
+    Reads through `load_matrix` rather than materialising rows as Python
+    objects: at twenty million rows the object version costs several hundred
+    bytes each and does not fit in memory, which is the same wall the point
+    model hit.
+    """
+    X, y, entur, split, vocabs, valid_dates, n, _ = load_matrix(
+        dataset_path, valid_days, valid_on)
+    if valid_dates:
         print(f"day split: validating on {', '.join(valid_dates)}")
     else:
-        split = int(len(rows) * 0.8)
+        split = int(n * 0.8)
         print("WARNING: too few operating dates for a day split; using 80/20")
+    print(f"rows: {n} (train {split}, valid {n - split})")
 
-    X, y, _, vocabs = encode(rows, split)
     cat_idx = [FEATURES.index(c) for c in CATEGORICAL]
     dtrain = lgb.Dataset(X[:split], label=y[:split], feature_name=FEATURES,
                          categorical_feature=cat_idx, free_raw_data=False)
@@ -107,12 +113,12 @@ def train_quantiles(dataset_path, valid_days=1, quantiles=QUANTILES):
         boosters[alpha] = booster
         print(f"  q{alpha:g}: best iteration {booster.best_iteration}")
 
-    return rows, split, X, y, preds, boosters, vocabs
+    return X, y, entur, split, preds, boosters, vocabs
 
 
-def evaluate(rows, split, y, preds, quantiles=QUANTILES):
+def evaluate(X, split, y, preds, quantiles=QUANTILES):
     """Coverage and interval width per horizon, plus pinball loss per quantile."""
-    horizon = np.array([r[0] for r in rows], dtype=float)[split:]
+    horizon = X[:, FEATURES.index("horizon_sec")].astype(float)[split:]
     yv = y[split:]
     lo, hi = preds[min(quantiles)], preds[max(quantiles)]
     nominal = (max(quantiles) - min(quantiles)) * 100
@@ -140,7 +146,7 @@ def evaluate(rows, split, y, preds, quantiles=QUANTILES):
     return summary
 
 
-def ladder_report(dataset_path, valid_days=1, minutes=(2, 5)):
+def ladder_report(dataset_path, valid_days=1, minutes=(2, 5), valid_on=None):
     """Fit the full ladder and check whether its probabilities are true.
 
     Two checks. The first is general: the probability assigned to the delay
@@ -149,12 +155,12 @@ def ladder_report(dataset_path, valid_days=1, minutes=(2, 5)):
     second is the passenger's own question: of all the times we said an
     arrival was 80 percent likely within two minutes, how often was it.
     """
-    rows, split, X, y, preds, boosters, _ = train_quantiles(
-        dataset_path, valid_days=valid_days, quantiles=LEVELS
+    X, y, entur_all, split, preds, boosters, _ = train_quantiles(
+        dataset_path, valid_days=valid_days, quantiles=LEVELS, valid_on=valid_on
     )
     yv = y[split:]
-    horizon = np.array([r[0] for r in rows], dtype=float)[split:]
-    entur = np.array([r[-2] for r in rows], dtype=float)[split:]
+    horizon = X[:, FEATURES.index("horizon_sec")].astype(float)[split:]
+    entur = entur_all[split:].astype(float)
     ladder = enforce_monotonic(np.column_stack([preds[a] for a in LEVELS]).tolist())
 
     pit = np.array([probability_within(row, actual) for row, actual in zip(ladder, yv)])
@@ -189,20 +195,26 @@ def main(argv=None):
     parser.add_argument("--dataset", default=str(DATASET_PATH))
     parser.add_argument("--out", default=str(MODEL_DIR))
     parser.add_argument("--valid-days", type=int, default=1)
+    parser.add_argument("--valid-date", action="append", metavar="YYYY-MM-DD",
+                        help="validate on this operating date instead of the "
+                             "last one, which is often a part-day")
     parser.add_argument("--ladder", action="store_true",
                         help="fit the full quantile ladder and check whether its "
                              "probabilities hold up, instead of the three-point interval")
     args = parser.parse_args(argv)
 
-    if args.ladder:
-        ladder_report(args.dataset, valid_days=args.valid_days)
-        return 0
+    from .joblock import heavy  # the site export shares this machine
 
-    rows, split, _, y, preds, boosters, vocabs = train_quantiles(
-        args.dataset, valid_days=args.valid_days
-    )
-    print(f"rows: {len(rows)} (train {split}, valid {len(rows) - split})")
-    summary = evaluate(rows, split, y, preds)
+    with heavy("quantiles"):
+        if args.ladder:
+            ladder_report(args.dataset, valid_days=args.valid_days,
+                          valid_on=args.valid_date)
+            return 0
+
+        X, y, _, split, preds, boosters, vocabs = train_quantiles(
+            args.dataset, valid_days=args.valid_days, valid_on=args.valid_date
+        )
+        summary = evaluate(X, split, y, preds)
 
     from pathlib import Path
 
