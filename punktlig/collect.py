@@ -190,6 +190,30 @@ def poll_once(conn, save_raw=True):
     return stats
 
 
+# SQLite cannot fold the write-ahead log back into the database while any
+# reader still holds an older snapshot, and the site export reads the archive
+# every ten minutes. Left alone the log grew to two gigabytes, at which point
+# opening the archive took longer than the collector's own busy timeout and
+# it died on startup. Asking often costs nothing when there is nothing to do.
+CHECKPOINT_EVERY = 30
+
+
+def checkpoint(conn):
+    """Fold the write-ahead log back into the archive, if readers allow it.
+
+    A blocked checkpoint is not a failure: it means somebody is reading, and
+    the next attempt is half an hour away at most.
+    """
+    try:
+        busy, written, moved = conn.execute(
+            "PRAGMA wal_checkpoint(TRUNCATE)"
+        ).fetchone()
+        if busy:
+            _log("checkpoint: a reader holds the log open, trying again later")
+    except Exception as exc:
+        _log(f"checkpoint: skipped ({exc})")
+
+
 def run(conn, once=False, interval=60, save_raw=True, sleep=time.sleep,
         connect=None, poll=None):
     """Poll until told to stop, surviving transient failures and quitting on stuck ones.
@@ -205,9 +229,11 @@ def run(conn, once=False, interval=60, save_raw=True, sleep=time.sleep,
     connect = connect or (lambda: db.connect(DB_PATH))
     poll = poll or poll_once
     failures = 0
+    polls = 0
 
     while True:
         started = time.monotonic()
+        polls += 1
         try:
             stats = poll(conn, save_raw=save_raw)
             _log(
@@ -237,6 +263,9 @@ def run(conn, once=False, interval=60, save_raw=True, sleep=time.sleep,
                 except Exception:
                     pass
                 conn = connect()
+
+        if polls % CHECKPOINT_EVERY == 0:
+            checkpoint(conn)
 
         if once:
             return 0
