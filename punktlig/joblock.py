@@ -60,10 +60,18 @@ def step_aside():
         except Exception:
             pass
 
-# Two separate concerns, so two locks. The heavy analysis jobs must not run
-# at the same time as each other; the collector must not run at the same time
-# as another collector. They never contend with one another.
+# Three separate concerns, so three locks, because a lock that guards more
+# than its reason costs something real. Holding the DuckDB lock through a
+# three-hour training run kept the site export from publishing for three
+# hours, and training does not touch DuckDB at all.
+#
+#   duckdb    the export, the replay and the recovery, which crash the
+#             machine when two of them run at once
+#   fitting   training and the quantile ladder, which are memory-heavy but
+#             read plain SQLite and can safely run beside an export
+#   collector one collector, machine-wide
 LOCK_NAME = "duckdb.lock"
+FITTING_LOCK = "fitting.lock"
 COLLECTOR_LOCK = "collector.lock"
 
 if sys.platform == "win32":
@@ -129,9 +137,10 @@ def heavy(label, wait=True, poll_seconds=20, data_dir=None, log=print,
         handle.truncate()
         handle.write(f"{label} pid={os.getpid()}\n".encode())
         handle.flush()
-        if name == LOCK_NAME:
+        if name != COLLECTOR_LOCK:
             # Analysis jobs yield the disk to the collector. The collector
-            # takes a different lock and keeps its normal priority.
+            # keeps its normal priority: a missed poll cannot be recovered,
+            # a slower training run can.
             step_aside()
         try:
             yield True

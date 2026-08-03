@@ -57,7 +57,7 @@ class JobLockTest(unittest.TestCase):
         # while another process still holds it, because python shares the
         # handle; only removal actually requires every handle to be closed,
         # which is exactly what the directory cleanup will need.
-        for name in ("duckdb.lock", "collector.lock"):
+        for name in ("duckdb.lock", "collector.lock", "fitting.lock"):
             path = lock_path(self.dir, name)
             for _ in range(100):
                 try:
@@ -108,6 +108,18 @@ class JobLockTest(unittest.TestCase):
                        name="collector.lock", log=lambda *a: None) as second:
                 self.assertTrue(first)
                 self.assertTrue(second)
+
+    def test_fitting_does_not_block_the_export(self):
+        # A three-hour training run held the DuckDB lock and stopped the site
+        # publishing for three hours, for no reason: fitting reads plain
+        # SQLite and never touches DuckDB.
+        from punktlig.joblock import FITTING_LOCK
+
+        proc = hold_in_another_process(self.dir, 10, name=FITTING_LOCK)
+        self.addCleanup(stop, proc, self.dir, FITTING_LOCK)
+        with heavy("site", wait=False, data_dir=self.dir,
+                   log=lambda *a: None) as got:
+            self.assertTrue(got)
 
     def test_a_named_lock_still_excludes_its_own_kind(self):
         proc = hold_in_another_process(self.dir, 10, name="collector.lock")

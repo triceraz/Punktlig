@@ -345,6 +345,16 @@ def main(argv=None):
         FEATURES[:] = NUMERIC + CATEGORICAL
         print(f"ablation: excluded {', '.join(sorted(dropped))}")
 
+    # One fit at a time: two of these together hold nine gigabytes of feature
+    # matrix between them. They read plain SQLite, so the site export is free
+    # to keep publishing meanwhile.
+    from .joblock import FITTING_LOCK, heavy
+
+    with heavy("train", name=FITTING_LOCK):
+        return _train(args)
+
+
+def _train(args):
     X, y, entur, split, vocabs, valid_dates, n, sources = load_matrix(
         args.dataset, args.valid_days, args.valid_date)
     if n < 1000:

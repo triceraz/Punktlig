@@ -203,9 +203,11 @@ def main(argv=None):
                              "probabilities hold up, instead of the three-point interval")
     args = parser.parse_args(argv)
 
-    from .joblock import heavy  # the site export shares this machine
+    # Fitting reads plain SQLite, so it can run beside the site export and
+    # only has to exclude another fit.
+    from .joblock import FITTING_LOCK, heavy
 
-    with heavy("quantiles"):
+    with heavy("quantiles", name=FITTING_LOCK):
         if args.ladder:
             ladder_report(args.dataset, valid_days=args.valid_days,
                           valid_on=args.valid_date)
