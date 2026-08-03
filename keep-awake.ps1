@@ -1,27 +1,26 @@
-# Hold the machine awake only while a Punktlig job is actually running.
+# Keep the desktop awake while Punktlig is working, and let it sleep when it
+# is not.
 #
-# Sleep is otherwise wanted: the Claude app's execution request is overridden
-# so an idle desktop suspends normally. But an idle desktop is exactly what a
-# long dataset build or training run looks like to Windows, which counts user
-# input, not CPU load. Without this the machine would suspend mid-job.
+# The collector is the point of the project: it polls every minute, around the
+# clock, and a machine that suspends stops collecting. So while any Punktlig
+# python process is alive, the system is held awake.
 #
 # Only ES_SYSTEM_REQUIRED is set, never ES_DISPLAY_REQUIRED, so the screens
-# still switch off on their own timer. The request is released the moment the
-# job exits, which is what makes this safe to leave running.
-
-# Match on the command line, not the process name. The collector is itself a
-# long-lived python process, so watching "python" would hold the lock open
-# forever and quietly cancel sleep altogether.
+# still switch off on their own timer. The desktop stays dark and quiet; it
+# simply does not suspend.
 #
-# The default covers anything run out of the project or a scratch script that
-# names it, and excludes the two things that must not hold the machine awake:
-# the collector, which never stops, and a static file server. Listing module
-# names instead let a repair script fall outside the guard, and the desktop
-# suspended in the middle of a delete.
+# The request is released the moment the last job exits, which is what keeps
+# this honest: with nothing running, the machine sleeps normally.
+#
+# Run with -Persist from a login shortcut to guard the machine continuously.
+# Without it, the script exits once nothing has matched for a while, which
+# suits guarding a single long job from an interactive session.
+
 param(
     [string]$Pattern = "punktlig",
-    [string]$Exclude = "punktlig\.collect|http\.server",
-    [int]$GraceSeconds = 90
+    [string]$Exclude = "http\.server",
+    [int]$GraceSeconds = 90,
+    [switch]$Persist
 )
 
 Add-Type -Language CSharp @'
@@ -45,23 +44,39 @@ function Running {
                        $_.CommandLine -notmatch $Exclude }).Count
 }
 
-try {
-    [Awake]::Hold()
-    "$(& $stamp)  holder maskinen vaaken mens jobber matchende '$Pattern' kjorer"
+# An S4U scheduled task hides its command line from an unelevated session, so
+# the collector is invisible to the check above. Its lock file is not: it is
+# held open for as long as the collector runs, and cannot be deleted until it
+# stops. Trying to remove it is therefore a reliable liveness test, and a
+# harmless one, since a stale file is exactly what should be cleared away.
+$collectorLock = Join-Path $env:PUNKTLIG_DATA "collector.lock"
+if (-not $env:PUNKTLIG_DATA) { $collectorLock = "D:\punktlig-data\collector.lock" }
 
-    # A grace period covers the gap between two chained jobs, so the build
-    # finishing and the training starting does not drop the request.
+function CollectorAlive {
+    if (-not (Test-Path $collectorLock)) { return $false }
+    try { Remove-Item $collectorLock -ErrorAction Stop; return $false }
+    catch { return $true }
+}
+
+try {
+    $holding = $false
     $idleSince = $null
     while ($true) {
-        if ((Running) -gt 0) {
-            $idleSince = $null
+        $busy = ((Running) -gt 0) -or (CollectorAlive)
+
+        if ($busy -and -not $holding) {
+            [Awake]::Hold(); $holding = $true
+            "$(& $stamp)  holder maskinen vaaken"
         }
-        elseif ($null -eq $idleSince) {
-            $idleSince = Get-Date
+        elseif (-not $busy -and $holding) {
+            [Awake]::Release(); $holding = $false
+            "$(& $stamp)  ingenting kjorer, slipper vaakelaasen"
         }
-        elseif (((Get-Date) - $idleSince).TotalSeconds -ge $GraceSeconds) {
-            "$(& $stamp)  ingen slike jobber paa $GraceSeconds s, slipper vaakelaasen"
-            break
+
+        if (-not $Persist) {
+            if ($busy) { $idleSince = $null }
+            elseif ($null -eq $idleSince) { $idleSince = Get-Date }
+            elseif (((Get-Date) - $idleSince).TotalSeconds -ge $GraceSeconds) { break }
         }
         Start-Sleep -Seconds 15
     }

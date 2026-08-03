@@ -118,8 +118,16 @@ BUSY_TIMEOUT_MS = 30_000
 def connect(path):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=BUSY_TIMEOUT_MS / 1000)
-    conn.execute("PRAGMA journal_mode=WAL")
+    # busy_timeout first, so everything after it waits for a lock instead of
+    # failing on one. Setting the journal mode needs a brief exclusive moment
+    # and is refused outright while another connection is reading, which
+    # killed the collector on startup whenever the site export happened to be
+    # scanning the archive. Asking first makes the normal case a plain read:
+    # the database is already in WAL, and nothing has to be taken at all.
     conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+    mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    if (mode or "").lower() != "wal":
+        conn.execute("PRAGMA journal_mode=WAL")
     # The replay reads every call in chronological order per journey, which
     # no index can satisfy because the timestamp lives in the poll table. That
     # sort spilled into RAM and cost gigabytes once the archive passed twenty

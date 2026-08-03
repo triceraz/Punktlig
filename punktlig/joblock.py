@@ -25,7 +25,11 @@ from pathlib import Path
 
 from .config import DATA_DIR
 
+# Two separate concerns, so two locks. The heavy analysis jobs must not run
+# at the same time as each other; the collector must not run at the same time
+# as another collector. They never contend with one another.
 LOCK_NAME = "duckdb.lock"
+COLLECTOR_LOCK = "collector.lock"
 
 if sys.platform == "win32":
     import msvcrt
@@ -60,19 +64,20 @@ else:
             pass
 
 
-def lock_path(data_dir=None):
-    return Path(data_dir or DATA_DIR) / LOCK_NAME
+def lock_path(data_dir=None, name=LOCK_NAME):
+    return Path(data_dir or DATA_DIR) / name
 
 
 @contextmanager
-def heavy(label, wait=True, poll_seconds=20, data_dir=None, log=print):
+def heavy(label, wait=True, poll_seconds=20, data_dir=None, log=print,
+          name=LOCK_NAME):
     """Hold the machine-wide DuckDB lock for the duration of the block.
 
     Yields True when the lock was taken. With `wait=False` it yields False
     instead of blocking, and the caller is expected to do nothing at all;
     running anyway is the exact failure this module exists to prevent.
     """
-    path = lock_path(data_dir)
+    path = lock_path(data_dir, name)
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = open(path, "a+b")
     try:

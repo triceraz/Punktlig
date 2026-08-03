@@ -16,13 +16,14 @@ from pathlib import Path
 from punktlig.joblock import heavy, lock_path
 
 
-def hold_in_another_process(data_dir, seconds):
+def hold_in_another_process(data_dir, seconds, name="duckdb.lock"):
     """Start a process that takes the lock and keeps it for a while."""
     code = textwrap.dedent(f"""
         import sys, time
         sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
         from punktlig.joblock import heavy
-        with heavy("other", data_dir={str(data_dir)!r}, log=lambda *a: None):
+        with heavy("other", data_dir={str(data_dir)!r}, name={name!r},
+                   log=lambda *a: None):
             print("holding", flush=True)
             time.sleep({seconds})
     """)
@@ -32,33 +33,38 @@ def hold_in_another_process(data_dir, seconds):
     return proc
 
 
-def stop(proc, data_dir):
-    """Kill the holder and wait until its handle is really gone.
-
-    Killing a process releases its lock immediately, but Windows keeps the
-    file handle for a moment afterwards, which is long enough to fail the
-    temporary-directory cleanup and turn a passing test into an error.
-    """
+def stop(proc, data_dir, name="duckdb.lock"):
+    """Kill the holder and close the pipe. The lock file is removed by the
+    per-test cleanup, which retries until Windows lets go of the handle."""
     proc.kill()
     proc.wait(timeout=10)
     if proc.stdout:
         proc.stdout.close()
-    path = lock_path(data_dir)
-    for _ in range(100):
-        try:
-            with open(path, "r+b"):
-                return
-        except FileNotFoundError:
-            return
-        except PermissionError:
-            time.sleep(0.05)
 
 
 class JobLockTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        # Runs before the directory cleanup, since cleanups are last-in
+        # first-out. Windows keeps a lock file handle for a moment after the
+        # owner releases it, which is long enough to fail the removal.
+        self.addCleanup(self._wait_for_locks)
         self.dir = Path(self.tmp.name)
+
+    def _wait_for_locks(self):
+        # Deleting is the real test. A lock file can be opened for reading
+        # while another process still holds it, because python shares the
+        # handle; only removal actually requires every handle to be closed,
+        # which is exactly what the directory cleanup will need.
+        for name in ("duckdb.lock", "collector.lock"):
+            path = lock_path(self.dir, name)
+            for _ in range(100):
+                try:
+                    path.unlink(missing_ok=True)
+                    break
+                except PermissionError:
+                    time.sleep(0.05)
 
     def test_an_uncontended_lock_is_granted(self):
         with heavy("a", data_dir=self.dir, log=lambda *a: None) as got:
@@ -78,13 +84,37 @@ class JobLockTest(unittest.TestCase):
     def test_the_lock_survives_the_holder_being_killed(self):
         stop(hold_in_another_process(self.dir, 60), self.dir)
         # The operating system drops the lock with the process, so no stale
-        # owner can wedge the next run.
-        with heavy("after", wait=False, data_dir=self.dir, log=lambda *a: None) as got:
-            self.assertTrue(got)
+        # owner can wedge the next run. It does so promptly rather than
+        # instantly: Windows keeps the handle for a moment after the kill,
+        # which is why the collector's scheduler retries rather than giving
+        # up on the first refusal.
+        for _ in range(100):
+            with heavy("after", wait=False, data_dir=self.dir,
+                       log=lambda *a: None) as got:
+                if got:
+                    return
+            time.sleep(0.05)
+        self.fail("lock was never released after the holder was killed")
 
     def test_the_lock_file_lives_in_the_data_directory(self):
         with heavy("a", data_dir=self.dir, log=lambda *a: None):
             self.assertTrue(lock_path(self.dir).exists())
+
+    def test_differently_named_locks_do_not_contend(self):
+        # The collector and the replay guard different things and must never
+        # wait on each other.
+        with heavy("replay", data_dir=self.dir, log=lambda *a: None) as first:
+            with heavy("collector", wait=False, data_dir=self.dir,
+                       name="collector.lock", log=lambda *a: None) as second:
+                self.assertTrue(first)
+                self.assertTrue(second)
+
+    def test_a_named_lock_still_excludes_its_own_kind(self):
+        proc = hold_in_another_process(self.dir, 10, name="collector.lock")
+        self.addCleanup(stop, proc, self.dir, "collector.lock")
+        with heavy("collector", wait=False, data_dir=self.dir,
+                   name="collector.lock", log=lambda *a: None) as got:
+            self.assertFalse(got)
 
 
 if __name__ == "__main__":

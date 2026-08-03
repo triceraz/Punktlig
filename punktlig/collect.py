@@ -252,9 +252,21 @@ def main(argv=None):
     parser.add_argument("--no-raw", action="store_true", help="skip archiving raw gzipped XML")
     args = parser.parse_args(argv)
 
-    conn = db.connect(DB_PATH)
-    _log(f"db: {DB_PATH} | dataset: {DATASET} | modes: {','.join(MODES)}")
-    return run(conn, once=args.once, interval=args.interval, save_raw=not args.no_raw)
+    # One collector at a time, machine-wide. A restart can leave the previous
+    # python running: the scheduler refuses a second task instance, but the
+    # orphaned process it lost track of keeps polling, so three collectors
+    # ended up sharing one database and hammering the feed three times over.
+    # The lock is held by the operating system, so a crashed owner releases it
+    # at once and a genuine restart is never blocked.
+    from .joblock import COLLECTOR_LOCK, heavy
+
+    with heavy("collector", wait=False, name=COLLECTOR_LOCK, log=_log) as got:
+        if not got:
+            return 0
+        conn = db.connect(DB_PATH)
+        _log(f"db: {DB_PATH} | dataset: {DATASET} | modes: {','.join(MODES)}")
+        return run(conn, once=args.once, interval=args.interval,
+                   save_raw=not args.no_raw)
 
 
 if __name__ == "__main__":
