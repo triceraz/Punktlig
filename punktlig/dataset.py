@@ -394,7 +394,12 @@ def _sample_clause(keep):
 # archived, so both defaults are wrong here: the limit has to leave room for
 # the replay itself, and the spill belongs on the disk that holds the archive
 # rather than the one holding the code.
-DUCK_MEMORY_LIMIT = "2GB"
+#
+# Raised from two gigabytes on 2026-08-04, when the site export began failing
+# outright as the archive grew: the history aggregate collects a list per
+# entity and cannot spill that. Only one DuckDB job runs at a time, held apart
+# by the lock, so the headroom is there to give.
+DUCK_MEMORY_LIMIT = "4GB"
 
 
 def _duck_connect(archive_path, memory_limit=DUCK_MEMORY_LIMIT):
@@ -403,6 +408,11 @@ def _duck_connect(archive_path, memory_limit=DUCK_MEMORY_LIMIT):
 
     con = duckdb.connect()
     con.execute(f"SET memory_limit='{memory_limit}'")
+    # Nothing here depends on rows coming back in the order they were stored:
+    # every query either aggregates or sorts explicitly. Dropping the
+    # guarantee lets DuckDB stream large aggregations instead of buffering
+    # them, which is the difference between finishing and running out.
+    con.execute("SET preserve_insertion_order=false")
     spill = os.path.dirname(os.path.abspath(archive_path))
     if spill:
         con.execute(f"SET temp_directory='{spill}'")
