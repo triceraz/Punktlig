@@ -579,7 +579,25 @@ const MAP_MODES = {
   buss:  {set:["bus"],                               label:"buss"},
   av:    {set:[],                                    label:"av"},
 };
-const DEFAULT_MAP = "tbane";
+const DEFAULT_MAP = "alt";
+
+// What the frame is measured on. Metro and tram are the shape of the city,
+// so when they are drawn they decide the window and everything else fills it
+// and runs off the edges, the way lines do on any city transit map. Ask for
+// trains or buses alone and there is no city core in the picture, so the
+// frame falls back to whatever is drawn.
+const CORE = ["metro", "tram"];
+// The modes whose colour is part of how people name the line: the five metro
+// lines and the trikk. Vy publishes red for several of its train lines and
+// Ruter red for half its buses, and red on this map means a badly delayed
+// vehicle. Everything outside this set is drawn in a background shade so the
+// one colour that carries meaning keeps carrying it.
+const LINE_COLOUR = new Set(["metro", "tram"]);
+const BACKGROUND_LINE = {rail: "#3f5a86", water: "#2f5560", bus: "#26313d"};
+const frameModes = () => {
+  const core = CORE.filter(m => DRAW.has(m));
+  return core.length ? new Set(core) : DRAW;
+};
 
 def("kart", "styr kartet: alt, bane, tog, buss, av", (arg) => {
   const modes = MAP_MODES;
@@ -867,7 +885,9 @@ document.getElementById("chips").addEventListener("click", ev => {
 // vehicles sat outside the picture. Trains are still one keystroke away
 // (`kart tog`, `kart alt`), and asking for them now moves the frame with them.
 let DRAW = new Set(MAP_MODES[DEFAULT_MAP].set);
-const WEIGHT = {metro:2.1, tram:1.6, rail:1.4, water:1.1, bus:.55};
+// Thick enough to read as a network at a glance. At two pixels the lines
+// looked like pencil marks on a large black field.
+const WEIGHT = {metro:4.6, tram:3.2, rail:2.8, water:2.2, bus:.9};
 // The hubs a local recognises the shape by; drawn as faint labels. Downtown
 // keeps one name, since every central stop overlaps every other there.
 const HUBS = ["Jernbanetorget", "Majorstuen", "Tøyen",
@@ -883,12 +903,11 @@ function fit() {
   const dpr = devicePixelRatio || 1;
   cv.width = Math.round(box.width * dpr); cv.height = Math.round(box.height * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  // Frame exactly what is drawn, so nothing runs off the edge and every
-  // vehicle on a drawn line is somewhere in the picture.
   const S = DATA.network.stops;
+  const framed = frameModes();
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const r of DATA.network.routes) {
-    if (!DRAW.has(r.mode)) continue;
+    if (!framed.has(r.mode)) continue;
     for (const i of r.path) {
       const [x, y] = merc(S[i][0], S[i][1]);
       x0 = Math.min(x0, x); x1 = Math.max(x1, x);
@@ -921,22 +940,64 @@ function draw() {
   const skin = {route:css("--fg-dim"), faint:css("--fg-faint"), dim:css("--dim"),
                 ok:css("--fg"), warn:css("--amber"), bad:css("--red")};
 
-  for (const mode of ["bus", "water", "rail", "tram", "metro"]) {
-    if (!DRAW.has(mode)) continue;
-    ctx.strokeStyle = mode === "bus" ? skin.faint : skin.route;
-    ctx.lineWidth = WEIGHT[mode]; ctx.lineJoin = ctx.lineCap = "round";
-    ctx.globalAlpha = mode === "bus" ? .5 : mode === "rail" ? .65 : .9;
-    for (const r of DATA.network.routes) {
-      if (r.mode !== mode || r.path.length < 2) continue;
-      ctx.beginPath();
-      r.path.forEach((idx, i) => {
-        const [x, y] = px(S[idx][0], S[idx][1]);
-        i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-      });
-      ctx.stroke();
+  // Lines carry their own colour. Drawn in one phosphor shade the network
+  // read as a scribble: five metro lines through the same tunnel became one
+  // stroke, and nothing told you which line you were looking at. The colours
+  // are the ones an Osloite recognises before reading a word, and they come
+  // from the export rather than from a list written here.
+  //
+  // Each route is laid down twice: a dark casing first, then the colour on
+  // top. That is what keeps parallel lines legible where they run together,
+  // and it is why a transit map looks like a map and not like wiring.
+  for (const pass of ["casing", "colour"]) {
+    for (const mode of ["bus", "water", "rail", "tram", "metro"]) {
+      if (!DRAW.has(mode)) continue;
+      const width = WEIGHT[mode];
+      ctx.lineJoin = ctx.lineCap = "round";
+      for (const r of DATA.network.routes) {
+        if (r.mode !== mode || r.path.length < 2) continue;
+        if (pass === "casing") {
+          ctx.strokeStyle = "#04060a";
+          ctx.lineWidth = width + 3;
+          ctx.globalAlpha = 1;
+        } else {
+          // Only the lines a passenger identifies by colour get to keep one.
+          // Ruter publishes a colour for buses too, and it is red: drawn with
+          // it, three hundred bus routes turn the city into a red web and the
+          // one thing red is supposed to mean here, a badly delayed vehicle,
+          // becomes invisible. Red belongs to lateness on this map.
+          ctx.strokeStyle = LINE_COLOUR.has(mode) ? (r.colour || skin.route)
+                                                  : (BACKGROUND_LINE[mode] || "#26313d");
+          ctx.lineWidth = width;
+          ctx.globalAlpha = mode === "bus" ? .8 : .95;
+        }
+        ctx.beginPath();
+        r.path.forEach((idx, i) => {
+          const [x, y] = px(S[idx][0], S[idx][1]);
+          i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+        });
+        ctx.stroke();
+      }
     }
   }
   ctx.globalAlpha = 1;
+
+  // A stop on every line it serves, so the shape reads as stations rather
+  // than as a bare polyline. Bus is left out: three hundred routes of dots
+  // is noise, not information.
+  const drawnStops = new Set();
+  for (const r of DATA.network.routes) {
+    if (!DRAW.has(r.mode) || r.mode === "bus") continue;
+    for (const idx of r.path) drawnStops.add(idx);
+  }
+  ctx.fillStyle = "#0b1016";
+  ctx.strokeStyle = "#8fa6b8";
+  ctx.lineWidth = 1.4;
+  for (const idx of drawnStops) {
+    const [x, y] = px(S[idx][0], S[idx][1]);
+    if (x < 0 || y < 0 || x > view.w || y > view.h) continue;
+    ctx.beginPath(); ctx.arc(x, y, 2.6, 0, 7); ctx.fill(); ctx.stroke();
+  }
 
   // Hub labels, drawn from the shared stop table by name. Each name once:
   // the table holds one row per platform, and eight overlapping copies of
@@ -960,16 +1021,27 @@ function draw() {
     const [x, y] = px(v.lon + (v.tlon - v.lon) * t, v.lat + (v.tlat - v.lat) * t);
     if (x < -10 || y < -10 || x > view.w + 10 || y > view.h + 10) continue;
     drawnVehicles.push({x, y, v});
-    ctx.beginPath(); ctx.arc(x, y, v.mode === "bus" ? 3 : 4, 0, 7);
+    const radius = v.mode === "bus" ? 3.4 : 4.6;
+    // A dark ring around each vehicle. Without it a green dot on a green
+    // line simply disappears, which is the one thing on this map that has
+    // to stay visible.
+    ctx.beginPath(); ctx.arc(x, y, radius + 1.6, 0, 7);
+    ctx.fillStyle = "#04060a"; ctx.fill();
+    ctx.beginPath(); ctx.arc(x, y, radius, 0, 7);
     ctx.fillStyle = v.now == null ? skin.dim
                   : v.now < 60 ? skin.ok : v.now < 180 ? skin.warn : skin.bad;
     ctx.fill();
   }
-  const worst = DATA.vehicles.filter(v => DRAW.has(v.mode) && v.now != null)
-                             .reduce((m, v) => Math.max(m, v.now), 0);
-  document.getElementById("mapinfo").textContent =
-    DRAW.size ? `${drawnVehicles.length} vogner i bildet, verste ${dur(worst)} sen`
-              : "kartet er av";
+  // Count the delay from what is actually on screen, not from the whole
+  // region: a train an hour late outside Akershus is not what the picture in
+  // front of you is showing.
+  const shown = drawnVehicles.map(d => d.v).filter(v => v.now != null);
+  const worst = shown.reduce((m, v) => Math.max(m, v.now), 0);
+  const late = shown.filter(v => v.now >= 180).length;
+  const total = DATA.vehicles.filter(v => DRAW.has(v.mode)).length;
+  document.getElementById("mapinfo").textContent = !DRAW.size ? "kartet er av"
+    : `${drawnVehicles.length} av ${total} vogner i bildet` +
+      (shown.length ? `, ${late} mer enn 3 min sen, verste ${dur(worst)}` : "");
 }
 addEventListener("resize", () => { view = null; });
 
