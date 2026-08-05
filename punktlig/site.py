@@ -234,6 +234,10 @@ def vehicles(conn, rows, now=None):
             "in_min": round(row["horizon_sec"] / 60, 1),
             "entur": round(row["entur_pred_delay_sec"]),
             "model": round(row["model_pred_delay_sec"]),
+            # This departure's own interval, not the average for its horizon.
+            # Absent when the quantile models have not been fitted.
+            "low": None if row.get("pred_low_sec") is None else round(row["pred_low_sec"]),
+            "high": None if row.get("pred_high_sec") is None else round(row["pred_high_sec"]),
             "now": round(row["current_delay_sec"]),
         })
     return out

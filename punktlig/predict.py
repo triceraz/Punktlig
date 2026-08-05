@@ -136,20 +136,9 @@ def upcoming_rows(archive_path=DB_PATH, parquet_dir=PARQUET_DIR, dataset=None,
     ]
 
 
-def predict(rows, model_dir=None):
-    """Attach a model prediction to each row. Requires the analysis extras."""
-    import lightgbm as lgb
+def _matrix(rows, features, vocabs):
+    """Rows as the feature matrix a booster was fitted on."""
     import numpy as np
-
-    model_dir = Path(model_dir or MODEL_DIR)
-    booster = lgb.Booster(model_file=str(model_dir / "punktlig-lgbm.txt"))
-    meta = json.loads((model_dir / "punktlig-lgbm.meta.json").read_text())
-    vocabs = meta["vocabs"]
-
-    # The feature list comes from the meta file, not from the training module:
-    # training variants add or drop features, and serving a booster with any
-    # other column layout than it was fitted on is silently wrong at best.
-    features = meta["features"]
 
     X = np.full((len(rows), len(features)), np.nan)
     for i, row in enumerate(rows):
@@ -160,9 +149,50 @@ def predict(rows, model_dir=None):
                 value = row.get(name)
                 if value is not None:
                     X[i, j] = value
+    return X
 
+
+def predict(rows, model_dir=None, quantile_dir=None):
+    """Attach the prediction, and the interval around it where one exists.
+
+    The point model answers how late; the quantile models answer how wrong
+    that could be. Each departure gets its own interval, because the spread
+    is predicted from the same features as the middle: a metro two stops from
+    the end is not as uncertain as a regional train an hour out.
+    """
+    import lightgbm as lgb
+
+    model_dir = Path(model_dir or MODEL_DIR)
+    booster = lgb.Booster(model_file=str(model_dir / "punktlig-lgbm.txt"))
+    meta = json.loads((model_dir / "punktlig-lgbm.meta.json").read_text())
+
+    # The feature list comes from the meta file, not from the training module:
+    # training variants add or drop features, and serving a booster with any
+    # other column layout than it was fitted on is silently wrong at best.
+    X = _matrix(rows, meta["features"], meta["vocabs"])
     for row, value in zip(rows, booster.predict(X)):
         row["model_pred_delay_sec"] = float(value)
+
+    quantile_dir = Path(quantile_dir or model_dir.parent / "model-quantiles")
+    qmeta_path = quantile_dir / "punktlig-quantiles.meta.json"
+    if not qmeta_path.exists():
+        return rows
+    qmeta = json.loads(qmeta_path.read_text(encoding="utf-8"))
+    QX = _matrix(rows, qmeta["features"], qmeta["vocabs"])
+    lo, hi = min(qmeta["quantiles"]), max(qmeta["quantiles"])
+    bounds = {
+        alpha: lgb.Booster(
+            model_file=str(quantile_dir / f"punktlig-q{alpha:g}.txt")
+        ).predict(QX)
+        for alpha in (lo, hi)
+    }
+    for i, row in enumerate(rows):
+        # Independently fitted quantiles can cross, and an interval whose top
+        # is below its bottom is not an interval. Sorting the pair is the same
+        # repair the ladder already applies.
+        low, high = sorted((float(bounds[lo][i]), float(bounds[hi][i])))
+        row["pred_low_sec"] = low
+        row["pred_high_sec"] = high
     return rows
 
 

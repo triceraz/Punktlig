@@ -120,7 +120,13 @@ def evaluate(X, split, y, preds, quantiles=QUANTILES):
     """Coverage and interval width per horizon, plus pinball loss per quantile."""
     horizon = X[:, FEATURES.index("horizon_sec")].astype(float)[split:]
     yv = y[split:]
-    lo, hi = preds[min(quantiles)], preds[max(quantiles)]
+    # Independently fitted quantiles can cross. Measured on this archive the
+    # widest interval was 2 070 seconds and the narrowest minus 45: an upper
+    # bound below the lower one, which is not an interval and quietly flatters
+    # both the width and the coverage. Sorting the pair is the same repair the
+    # ladder applies, and it belongs here too.
+    lo = np.minimum(preds[min(quantiles)], preds[max(quantiles)])
+    hi = np.maximum(preds[min(quantiles)], preds[max(quantiles)])
     nominal = (max(quantiles) - min(quantiles)) * 100
 
     print(f"\n{'horizon':>10} | {'n':>7} | {'coverage':>9} | {'target':>7} | "

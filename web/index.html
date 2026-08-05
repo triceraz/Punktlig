@@ -275,6 +275,19 @@ function arrivals(v) {
   return {ruter, ours: ruter + (v.model - v.entur)};
 }
 
+// This departure's own interval, in arrival times rather than in delays.
+// Every vehicle gets its own: the spread is predicted from the same features
+// as the middle, so a metro two stops from the end and a regional train an
+// hour out do not get the same window. The published table gives an average
+// per horizon, which is a summary of these, not a value any one of them has.
+function windowOf(v) {
+  if (v.low == null || v.high == null) return null;
+  const scheduled = arrivals(v).ruter - v.entur;  // arrival with no delay
+  const from = scheduled + v.low, to = scheduled + v.high;
+  const when = s => (s <= 0 ? "nå" : "om " + dur(s));
+  return {from: when(from), to: when(to), width: v.high - v.low};
+}
+
 const MODE_NB = {metro:"T-bane", tram:"trikk", rail:"tog", water:"båt", bus:"buss"};
 
 /* ------------------------------------------------------------------ commands */
@@ -496,8 +509,32 @@ som sier ${u.nominal} prosent og treffer 55 er pynt, ikke usikkerhet.`);
     ["", "d", "d", "g", "a"]);
   blank();
   wrap(`<span class="d">Vinduet vokser med horisonten, slik det skal: ${dur(u.buckets[0].width_sec)}
-rett før avgang, ${dur(u.buckets[u.buckets.length - 1].width_sec)} en halvtime fram. Modellen sier
-altså ikke bare hva den tror, men hvor sikker den er på det.</span>`);
+rett før avgang, ${dur(u.buckets[u.buckets.length - 1].width_sec)} en halvtime fram.</span>`);
+  blank();
+
+  // The table above is an average, and an average window is not a window any
+  // departure actually has. The spread between departures is larger than the
+  // spread between horizon buckets, so saying only the average hides the
+  // more interesting half of the result.
+  const vinduer = DATA.vehicles.map(v => windowOf(v)).filter(Boolean)
+                               .map(w => w.width).sort((a, b) => a - b);
+  if (vinduer.length > 20) {
+    const p = q => vinduer[Math.floor(q * (vinduer.length - 1))];
+    wrap(`<span class="w">Men snittet er ikke vinduet noen enkelt avgang får.</span> Bredden regnes
+per avgang, fra de samme opplysningene som selve anslaget, så en T-bane
+to stopp fra endestasjonen og et regiontog en time unna får ikke samme
+svar. Av de ${NB(vinduer.length)} vognene som er ute nå:`);
+    blank();
+    table(["", "vindu"], [
+      ["smaleste fjerdedel", "under " + dur(p(0.25))],
+      ["midt på", dur(p(0.5))],
+      ["bredeste fjerdedel", "over " + dur(p(0.75))],
+      ["bredeste enkeltvogn", dur(vinduer[vinduer.length - 1])],
+    ], ["d", "a"]);
+    blank();
+    wrap(`<span class="d">Skriv <span class="g">holdeplass</span> eller klikk en vogn i kartet for å se
+vinduet til akkurat den avgangen.</span>`);
+  }
   block();
 });
 
@@ -548,16 +585,25 @@ def("holdeplass", "avgangstavle med begge anslag", (arg) => {
     print(`<span class="d">ingen avganger igjen i denne fila for ${esc(name)}.</span>`);
     return block();
   }
-  wrap(`<span class="d">To ankomsttider for samme vogn: den appen viser, og vår. Kolonnen
-lengst til høyre er hvor sen vogna er akkurat nå.</span>`);
+  const hasWindow = rows.some(({v}) => windowOf(v));
+  wrap(`<span class="d">To ankomsttider for samme vogn: den appen viser, og vår.` +
+       (hasWindow ? ` Kolonnen «80 %»\ner denne avgangens eget vindu, ikke et snitt: hver vogn får sitt.`
+                  : "") + `</span>`);
   blank();
-  table(["linje", "appen sier", "punktlig sier", "sen nå"],
-    rows.map(({v, arr}) => [
-      `${v.line} mot ${v.dest || "?"}`,
-      arr.ruter <= 0 ? "nå" : "om " + dur(arr.ruter),
-      arr.ours  <= 0 ? "nå" : "om " + dur(arr.ours),
-      v.now == null ? "?" : signed(v.now)]),
-    ["w", "r", "g", "a"]);
+  table(hasWindow ? ["linje", "appen sier", "punktlig sier", "80 % innen", "sen nå"]
+                  : ["linje", "appen sier", "punktlig sier", "sen nå"],
+    rows.map(({v, arr}) => {
+      const w = windowOf(v);
+      const cells = [
+        `${v.line} mot ${v.dest || "?"}`,
+        arr.ruter <= 0 ? "nå" : "om " + dur(arr.ruter),
+        arr.ours  <= 0 ? "nå" : "om " + dur(arr.ours),
+      ];
+      if (hasWindow) cells.push(w ? `${w.from} – ${w.to}` : "?");
+      cells.push(v.now == null ? "?" : signed(v.now));
+      return cells;
+    }),
+    hasWindow ? ["w", "r", "g", "a", "d"] : ["w", "r", "g", "a"]);
   blank();
   const disagree = rows.filter(({v}) => Math.abs(v.model - v.entur) >= 30).length;
   wrap(`<span class="d">${disagree ? `Uenige om ${disagree} av ${rows.length} her, med minst et halvt minutt.`
@@ -1098,6 +1144,12 @@ cv.addEventListener("click", ev => {
         `<span class="d">  (tror ${signed(best.entur)} ved stoppet)</span>`);
   print(`  <span class="d">${padr("punktlig sier", 16)}</span><span class="g">${arr.ours <= 0 ? "nå" : "om " + dur(arr.ours)}</span>` +
         `<span class="d">  (tror ${signed(best.model)})</span>`);
+  const w = windowOf(best);
+  if (w) {
+    print(`  <span class="d">${padr("80 % innen", 16)}</span>` +
+          `<span class="a">${w.from} til ${w.to}</span>` +
+          `<span class="d">  vindu ${dur(w.width)}</span>`);
+  }
   block();
 });
 
