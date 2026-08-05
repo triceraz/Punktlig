@@ -469,6 +469,38 @@ og «appen» der det strengt tatt er «operatøren, distribuert av Entur».</spa
   block();
 });
 
+def("usikkerhet", "hvor mye kan den ta feil", () => {
+  const u = DATA.score.uncertainty;
+  if (!u) {
+    print(`<span class="d">intervallmodellene er ikke trent på dette datasettet ennå.</span>`);
+    return block();
+  }
+  heading("hvor mye kan den ta feil");
+  wrap(`Et anslag uten usikkerhet er en påstand uten forbehold. Appen gir
+ett tall og ingenting mer. Punktlig gir i tillegg et intervall: ikke
+«bussen er tre minutter sen», men «${u.nominal} prosent sjanse for at den
+lander innenfor dette vinduet».`);
+  blank();
+  wrap(`<span class="w">Det eneste tallet som betyr noe her er om løftet holder.</span> Et intervall
+som sier ${u.nominal} prosent og treffer 55 er pynt, ikke usikkerhet.`);
+  blank();
+  table(["horisont", "n", "lovet", "traff", "vindu"],
+    u.buckets.map(b => [
+      b.horizon.replace("min", " min"), NB(b.n),
+      u.nominal + " %",
+      (100 * b.coverage).toFixed(1).replace(".", ",") + " %",
+      dur(b.width_sec)])
+      .concat([["samlet", NB(u.buckets.reduce((s, b) => s + b.n, 0)),
+                u.nominal + " %",
+                (100 * u.coverage).toFixed(1).replace(".", ",") + " %", ""]]),
+    ["", "d", "d", "g", "a"]);
+  blank();
+  wrap(`<span class="d">Vinduet vokser med horisonten, slik det skal: ${dur(u.buckets[0].width_sec)}
+rett før avgang, ${dur(u.buckets[u.buckets.length - 1].width_sec)} en halvtime fram. Modellen sier
+altså ikke bare hva den tror, men hvor sikker den er på det.</span>`);
+  block();
+});
+
 def("grenser", "hva dette ikke kan si", () => {
   heading("begrensninger");
   [

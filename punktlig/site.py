@@ -261,6 +261,38 @@ def _origin_stops(conn, rows):
     return found
 
 
+def uncertainty(quantile_dir):
+    """What the prediction interval promised, and how often it held.
+
+    The point model says how late something will be. This says how wrong that
+    could be, and the only figure worth publishing about it is whether the
+    claim is true: an interval that says eighty percent and holds fifty-five
+    is decoration.
+    """
+    path = Path(quantile_dir) / "punktlig-quantiles.meta.json"
+    if not path.exists():
+        return None
+    meta = json.loads(path.read_text(encoding="utf-8"))
+    buckets = meta["validation"]
+    total = sum(b["n"] for b in buckets.values())
+    if not total:
+        return None
+    lo, hi = min(meta["quantiles"]), max(meta["quantiles"])
+    return {
+        "nominal": round((hi - lo) * 100),
+        "trained_at": meta["trained_at"],
+        "coverage": round(
+            sum(b["coverage"] * b["n"] for b in buckets.values()) / total, 4),
+        "buckets": [
+            {"horizon": k, "n": v["n"],
+             "coverage": round(v["coverage"], 4),
+             "width_sec": round(v["width_sec"]),
+             "median_mae": round(v["median_mae"], 1)}
+            for k, v in buckets.items()
+        ],
+    }
+
+
 def score(model_dir):
     """The validation comparison, in the terms a passenger would use."""
     meta = json.loads(Path(model_dir, "punktlig-lgbm.meta.json").read_text())
@@ -287,6 +319,10 @@ def score(model_dir):
         # Rows per codespace, so the page can say how the measurement is
         # composed rather than repeat a ratio somebody typed once.
         "operators": meta.get("operators"),
+        # How well the interval models hold their promise. Absent until the
+        # quantile ladder has been fitted, and the page then says nothing
+        # about uncertainty rather than inventing a figure.
+        "uncertainty": uncertainty(Path(model_dir).parent / "model-quantiles"),
     }
 
 
