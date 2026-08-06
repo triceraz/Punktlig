@@ -13,6 +13,9 @@
     --amber:#ffc857; --red:#ff6b5e; --white:#eefaf2;
     --mono:ui-monospace,"SF Mono","Cascadia Mono","DejaVu Sans Mono",Consolas,monospace;
     --glow:0 0 8px rgba(78,232,138,.32);
+    /* About 15.5px on a 1440-wide laptop screen, 19px on a 2560 desktop, and
+       a straight line between them rather than a jump at one breakpoint. */
+    --type:clamp(14px, 0.3125vw + 11px, 19px);
   }
   :root[data-theme="rav"]  { --fg:#ffc857; --fg-dim:#a9822f; --fg-faint:#59451a;
                              --ink:#e8d6ae; --dim:#93805a; --rule:#241d0e;
@@ -28,7 +31,13 @@
   html, body { height:100%; }
   body {
     margin:0; background:var(--bg); color:var(--ink); overflow:hidden;
-    font:400 19px/1.55 var(--mono);
+    /* Type scales with the window instead of sitting at one fixed size. At a
+       fixed 19px the terminal read correctly on a 2560px desktop and came out
+       so large on a 1440px laptop screen that the intro was cut off mid
+       sentence: the same page was comfortable on one machine and zoomed-in on
+       the other. Everything else on the page is expressed in em of this, so
+       one rule moves the whole terminal. */
+    font:400 var(--type)/1.55 var(--mono);
     text-shadow:var(--glow);
     -webkit-font-smoothing:antialiased;
   }
@@ -43,13 +52,20 @@
   a { color:var(--fg); }
 
   /* ---------- frame ---------- */
+  /* The console is sized in characters, because that is what it holds. On a
+     wide monitor a 64% column spent a third of itself on empty black while
+     the map beside it was too narrow to show a city wider than it is tall;
+     cut to a percentage instead, it clipped the longest boot line at
+     "6 195 holdeplasse". The floor is the width of that line plus its
+     padding, so the text can never be cut, and everything past the ceiling
+     goes to the map. */
   #shell { height:100%; display:grid; gap:1px; background:var(--rule);
-           grid-template-columns:minmax(0,1fr) minmax(24rem,36%);
-           grid-template-rows:46px minmax(0,1fr) 13.5rem;
+           grid-template-columns:minmax(0,clamp(88ch,42%,100ch)) minmax(0,1fr);
+           grid-template-rows:2.5em minmax(0,1fr) 11.4em;
            grid-template-areas: "bar bar" "con map" "con tail"; }
 
   #bar { grid-area:bar; background:var(--panel); display:flex; align-items:center;
-         gap:1rem; padding:0 1rem; font-size:16px; color:var(--dim);
+         gap:1rem; padding:0 1rem; font-size:.84em; color:var(--dim);
          border-bottom:1px solid var(--rule); }
   #bar .lights { display:flex; gap:7px; }
   #bar .lights i { width:13px; height:13px; border-radius:50%; }
@@ -62,13 +78,14 @@
   #bar .on { color:var(--fg); white-space:nowrap; }
   #bar .on::before { content:"● "; animation:beat 2.4s ease-in-out infinite; }
   @keyframes beat { 50% { opacity:.35 } }
-  #clock { font-size:18px; color:var(--ink); }
+  #clock { font-size:.95em; color:var(--ink); }
 
   .pane { background:var(--panel); min-width:0; min-height:0; position:relative;
           display:flex; flex-direction:column; }
-  .pane > h2 { margin:0; padding:.5rem .9rem; font:400 14px/1.5 var(--mono);
+  .pane > h2 { margin:0; padding:.5rem .9rem; font:400 .74em/1.5 var(--mono);
                letter-spacing:.16em; text-transform:uppercase; color:var(--dim);
-               border-bottom:1px solid var(--rule); display:flex; gap:.7rem; }
+               border-bottom:1px solid var(--rule); display:flex; gap:.7rem;
+               align-items:center; }
   .pane > h2 .grow { flex:1; }
   .pane > h2 b { font-weight:400; color:var(--fg-dim); text-transform:none;
                  letter-spacing:0; }
@@ -92,7 +109,7 @@
   .rule { color:var(--fg-faint); }
 
   #chips { display:flex; gap:.45rem; flex-wrap:wrap; padding:.6rem 1.1rem .1rem; }
-  #chips button { font:400 16px/1 var(--mono); color:var(--fg-dim); cursor:pointer;
+  #chips button { font:400 .84em/1 var(--mono); color:var(--fg-dim); cursor:pointer;
                   background:transparent; border:1px solid var(--rule); border-radius:4px;
                   padding:.42rem .65rem; text-shadow:none; }
   #chips button:hover { color:var(--bg); background:var(--fg); border-color:var(--fg); }
@@ -105,30 +122,55 @@
 
   /* ---------- map ---------- */
   #map { grid-area:map; }
-  #cv { flex:1; width:100%; display:block; cursor:crosshair; }
-  .mapnote { position:absolute; font-size:15px; color:var(--dim); pointer-events:none; }
-  #mapinfo { left:.8rem; bottom:.6rem; }
-  #mapkey { right:.8rem; bottom:.6rem; }
+  /* min-height:0 is load-bearing. A canvas is a replaced element, so its
+     automatic minimum size is its intrinsic height, and a flex item is not
+     allowed to shrink below that. `fit` sets the intrinsic height from the
+     box it measures, so the two fed each other: the canvas grew to 1354px
+     inside a 1054px panel, pushed the legend strip out of view entirely, and
+     was reported as 1068px tall in a 900px window. Zeroing the minimum lets
+     the row height decide the canvas rather than the other way round. */
+  #cv { flex:1; min-height:0; min-width:0; width:100%; display:block;
+        cursor:grab; touch-action:none; }
+  #cv.drag { cursor:grabbing; }
+  /* The counts and the colour key used to float on the canvas. With no
+     backdrop they sat directly on top of vehicles and route geometry, and at
+     laptop width the count wrapped onto two lines straight across the middle
+     of the city: unreadable as text and as map at the same time. A strip of
+     its own cannot collide with anything. */
+  #mapfoot { display:flex; align-items:center; gap:.9rem; padding:.42rem .9rem;
+             font-size:.74em; color:var(--dim); background:var(--panel);
+             border-top:1px solid var(--rule); white-space:nowrap;
+             overflow:hidden; }
+  #mapfoot .grow { flex:1; }
+  #mapinfo { overflow:hidden; text-overflow:ellipsis; }
   #mapkey i { display:inline-block; width:9px; height:9px; border-radius:50%;
               margin:0 .2rem 0 .6rem; vertical-align:-1px; }
+  #mapzoom { color:var(--fg-dim); }
 
   /* ---------- tail ---------- */
   #tail { grid-area:tail; }
-  #feed { flex:1; overflow:hidden; padding:.5rem .8rem; }
+  #feed { flex:1; min-height:0; overflow:hidden; padding:.4rem .8rem; }
   #feed div { white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
-              font-size:16px; line-height:1.65; animation:in .35s ease-out; }
+              font-size:.84em; line-height:1.65; animation:in .35s ease-out; }
   @keyframes in { from { opacity:0; transform:translateY(4px) } }
 
   /* ---------- sl ---------- */
   #sl { position:fixed; z-index:70; left:100vw; top:22vh; white-space:pre;
-        color:var(--fg); font-size:17px; line-height:1.15; pointer-events:none;
+        color:var(--fg); font-size:.9em; line-height:1.15; pointer-events:none;
         text-shadow:var(--glow); }
 
   @media (max-width:960px) {
-    body { overflow:auto; font-size:16.5px; }
-    #shell { height:auto; grid-template-columns:1fr;
-             grid-template-rows:38px 44vh 70vh 12rem;
+    /* One column, and the map first: on a phone it is the part worth the
+       screen. The type stays on the same scale as everywhere else rather
+       than being pinned back to a fixed size here. */
+    body { overflow:auto; }
+    #shell { height:auto; grid-template-columns:minmax(0,1fr);
+             grid-template-rows:2.5em 44vh 70vh 12rem;
              grid-template-areas:"bar" "map" "con" "tail"; }
+    /* The console's floor is a character count, which one column cannot
+       honour on a narrow screen; there it scrolls sideways instead of
+       forcing the page to. */
+    #out { overflow-x:auto; }
   }
 </style>
 </head>
@@ -155,12 +197,16 @@
 
   <div class="pane" id="map">
     <h2>kart <b id="mapmode"></b><span class="grow"></span>
-        <b>klikk på en vogn</b></h2>
+        <b>klikk en vogn &middot; dra &middot; rull for å zoome &middot; dobbeltklikk nullstiller</b></h2>
     <canvas id="cv"></canvas>
-    <div class="mapnote" id="mapinfo">&hellip;</div>
-    <div class="mapnote" id="mapkey">forsinkelse
-      <i style="background:var(--fg)"></i>&lt;1<i style="background:var(--amber)"></i>1-3
-      <i style="background:var(--red)"></i>&gt;3 min</div>
+    <div id="mapfoot">
+      <span id="mapinfo">&hellip;</span>
+      <span class="grow"></span>
+      <span id="mapzoom"></span>
+      <span id="mapkey">forsinkelse
+        <i style="background:var(--fg)"></i>&lt;1<i style="background:var(--amber)"></i>1-3
+        <i style="background:var(--red)"></i>&gt;3 min</span>
+    </div>
   </div>
 
   <div class="pane" id="tail">
@@ -235,9 +281,15 @@ function heading(text) {
 }
 
 function meterRows(rows, worst, width) {
+  // The label column is measured, not assumed. It was pinned at eleven
+  // characters while one of the labels is thirteen, so that row's bar started
+  // two characters right of the others and its number ended two characters
+  // right of theirs. Four bars meant to be read against each other, and the
+  // one thing a bar chart has to get right is a common baseline.
+  const pad = Math.max(...rows.map(r => String(r.k).length)) + 1;
   rows.forEach(r => {
     const n = Math.round(r.v / worst * width);
-    print(`<span class="d">${padr(r.k, 11)}</span>` +
+    print(`<span class="d">${padr(r.k, pad)}</span>` +
           `<span class="${r.c}">${"█".repeat(n)}</span>` +
           `<span class="f">${"·".repeat(Math.max(0, width - n))}</span>` +
           `<span class="${r.c}"> ${padl(one(r.v), 6)}</span>`);
@@ -285,7 +337,15 @@ function windowOf(v) {
   const scheduled = arrivals(v).ruter - v.entur;  // arrival with no delay
   const from = scheduled + v.low, to = scheduled + v.high;
   const when = s => (s <= 0 ? "nå" : "om " + dur(s));
-  return {from: when(from), to: when(to), width: v.high - v.low};
+  const width = v.high - v.low;
+  // A window can genuinely collapse. Near arrival the delay is already known,
+  // and the boats collapse at any distance: a ferry has no traffic to sit in,
+  // so the model has learned the Nesodden crossing is all but deterministic
+  // and gives it a nought-second spread fifteen minutes out. Printed as
+  // "nå til nå, vindu 0 s" that correct answer reads as a broken one, so a
+  // window this tight gets said in words instead of as an empty range.
+  const text = width < 20 ? `${when(from)}, på sekundet` : `${when(from)} til ${when(to)}`;
+  return {from: when(from), to: when(to), fromSec: from, toSec: to, text, width};
 }
 
 const MODE_NB = {metro:"T-bane", tram:"trikk", rail:"tog", water:"båt", bus:"buss"};
@@ -590,16 +650,25 @@ def("holdeplass", "avgangstavle med begge anslag", (arg) => {
        (hasWindow ? ` Kolonnen «80 %»\ner denne avgangens eget vindu, ikke et snitt: hver vogn får sitt.`
                   : "") + `</span>`);
   blank();
-  table(hasWindow ? ["linje", "appen sier", "punktlig sier", "80 % innen", "sen nå"]
-                  : ["linje", "appen sier", "punktlig sier", "sen nå"],
+  // Five columns of "om 1 min 34 s" ran the table to 99 characters in a
+  // console 82 wide, so the last column scrolled off the side. Inside the
+  // table the "om" is redundant, since the heading already says these are
+  // waits, and at a terminus the destination repeats the stop you asked about.
+  const brief = s => (s <= 0 ? "nå" : dur(s));
+  table(hasWindow ? ["linje", "appen", "punktlig", "80 % innen", "sen nå"]
+                  : ["linje", "appen", "punktlig", "sen nå"],
     rows.map(({v, arr}) => {
       const w = windowOf(v);
+      const dest = String(v.dest || "?");
       const cells = [
-        `${v.line} mot ${v.dest || "?"}`,
-        arr.ruter <= 0 ? "nå" : "om " + dur(arr.ruter),
-        arr.ours  <= 0 ? "nå" : "om " + dur(arr.ours),
+        `${v.line} mot ${dest.length > 15 ? dest.slice(0, 14) + "…" : dest}`,
+        brief(arr.ruter),
+        brief(arr.ours),
       ];
-      if (hasWindow) cells.push(w ? `${w.from} – ${w.to}` : "?");
+      if (hasWindow) {
+        cells.push(!w ? "?" : w.width < 20 ? brief(w.fromSec)
+                            : `${brief(w.fromSec)} – ${brief(w.toSec)}`);
+      }
       cells.push(v.now == null ? "?" : signed(v.now));
       return cells;
     }),
@@ -659,12 +728,6 @@ const MAP_MODES = {
 };
 const DEFAULT_MAP = "alt";
 
-// What the frame is measured on. Metro and tram are the shape of the city,
-// so when they are drawn they decide the window and everything else fills it
-// and runs off the edges, the way lines do on any city transit map. Ask for
-// trains or buses alone and there is no city core in the picture, so the
-// frame falls back to whatever is drawn.
-const CORE = ["metro", "tram"];
 // The modes whose colour is part of how people name the line: the five metro
 // lines and the trikk. Vy publishes red for several of its train lines and
 // Ruter red for half its buses, and red on this map means a badly delayed
@@ -672,10 +735,14 @@ const CORE = ["metro", "tram"];
 // one colour that carries meaning keeps carrying it.
 const LINE_COLOUR = new Set(["metro", "tram"]);
 const BACKGROUND_LINE = {rail: "#3f5a86", water: "#2f5560", bus: "#26313d"};
-const frameModes = () => {
-  const core = CORE.filter(m => DRAW.has(m));
-  return core.length ? new Set(core) : DRAW;
-};
+
+// Whether a mode contributes its route geometry. There are 305 bus routes and
+// ten metro lines; drawn together, the buses are a grey web across the whole
+// picture, and the thing the map exists to show, where the vehicles are and
+// how late they are, sits underneath it. So bus lines are drawn when buses
+// are what you asked for, and not when they are merely included. Bus vehicles
+// are always drawn either way.
+const lined = mode => DRAW.has(mode) && (mode !== "bus" || DRAW.size <= 2);
 
 def("kart", "styr kartet: alt, bane, tog, buss, av", (arg) => {
   const modes = MAP_MODES;
@@ -687,9 +754,13 @@ def("kart", "styr kartet: alt, bane, tog, buss, av", (arg) => {
     return block();
   }
   DRAW = new Set(pick.set);
-  view = null;  // the frame follows what is drawn, so it has to be remeasured
+  // The frame follows what is drawn, so it has to be remeasured, and a zoom
+  // held over from the previous mode would point at the wrong place.
+  view = null; zoom = 1;
   document.getElementById("mapmode").textContent = pick.label;
-  print(`<span class="d">kart: ${pick.label}. klikk på en vogn for detaljer her i konsollen.</span>`);
+  print(`<span class="d">kart: ${pick.label}.` +
+        (pick.set.length ? " klikk en vogn for detaljer her, dra for å flytte, rull for å zoome." : "") +
+        `</span>`);
   block();
 });
 
@@ -975,37 +1046,132 @@ const merc = (lon, lat) => [lon * Math.PI / 180,
 const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
 let view = null, drawnVehicles = [];
 
+// Where to point the camera. Both obvious answers are wrong, and the page has
+// now shipped each of them. Framing on everything drawn puts Eidsvoll, Halden
+// and Moss in the picture, and central Oslo, where nearly every vehicle is,
+// becomes a smudge a centimetre across. Framing on a fixed core instead, metro
+// and tram, while `kart alt` draws buses and trains across a region four times
+// larger, did the reverse: the city rendered as a thin band across the middle
+// of an otherwise empty panel, 171 of 742 vehicles fell outside it entirely,
+// and every train line ran off an edge. The frame and the picture were two
+// different maps.
+//
+// So the frame is measured on the vehicles themselves, clipped at the second
+// and ninety-eighth percentile of each axis. The picture lands where the
+// traffic is, and one train an hour out of town cannot set the scale for the
+// other seven hundred. Whatever falls outside is one scroll away.
+// Measured on a weekday midday: a 2 percent clip still spans 42 km and leaves
+// the city a clump, an 18 percent clip is 15 km and throws away half the
+// traffic. 5 percent is 33 km, which reaches Lillestrøm, Sandvika and Ski and
+// keeps 84 percent of what is running. The rest is one scroll away.
+const FRAME_CLIP = 0.05;
+const MAX_ZOOM = 40;
+
+// Sorted so the clip can be read off by index; the arrays are built per fit
+// and belong to nobody else, so sorting in place is free.
+function clipped(values, clip) {
+  values.sort((a, b) => a - b);
+  const i = Math.min(values.length - 1, Math.floor(values.length * clip));
+  return [values[i], values[values.length - 1 - i]];
+}
+
+let base = null, zoom = 1, panX = 0, panY = 0;
+// Canvas text is sized in pixels, and the page's own type is now a clamp on
+// the viewport. Reading the resolved size once per fit keeps the labels in
+// proportion with everything around them instead of drifting out of it on a
+// small screen.
+let TYPE_PX = 19;
+
 function fit() {
   const box = cv.getBoundingClientRect();
   if (!box.width || !box.height) return false;
+  TYPE_PX = parseFloat(getComputedStyle(document.body).fontSize) || 19;
   const dpr = devicePixelRatio || 1;
   cv.width = Math.round(box.width * dpr); cv.height = Math.round(box.height * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const S = DATA.network.stops;
-  const framed = frameModes();
-  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-  for (const r of DATA.network.routes) {
-    if (!framed.has(r.mode)) continue;
-    for (const i of r.path) {
-      const [x, y] = merc(S[i][0], S[i][1]);
-      x0 = Math.min(x0, x); x1 = Math.max(x1, x);
-      y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+  view = {w: box.width, h: box.height};
+
+  const xs = [], ys = [];
+  for (const v of DATA.vehicles) {
+    if (!DRAW.has(v.mode)) continue;
+    const [x, y] = merc(v.lon, v.lat);
+    xs.push(x); ys.push(y);
+  }
+  // At night, or for a mode with nothing running, there are too few vehicles
+  // to describe a region. Then the network itself is the best available
+  // answer, which is also what `kart av` gets.
+  if (xs.length < 25) {
+    const S = DATA.network.stops;
+    for (const r of DATA.network.routes) {
+      if (!DRAW.has(r.mode)) continue;
+      for (const i of r.path) {
+        const [x, y] = merc(S[i][0], S[i][1]);
+        xs.push(x); ys.push(y);
+      }
     }
   }
-  if (!(x1 > x0) || !(y1 > y0)) {  // nothing drawn, e.g. `kart av`
-    view = {k: 1, x0: 0, y1: 0, w: box.width, h: box.height, ox: 0, oy: 0};
+  if (!xs.length) {
+    base = {k: 1, x0: 0, y1: 0, ox: 0, oy: 0, cw: 0, ch: 0};
+    zoom = 1; panX = panY = 0;
     return true;
   }
-  const pad = 22;
-  const k = Math.min((box.width - pad * 2) / (x1 - x0), (box.height - pad * 2) / (y1 - y0));
-  view = {k, x0, y1, w:box.width, h:box.height,
-          ox:(box.width - (x1 - x0) * k) / 2, oy:(box.height - (y1 - y0) * k) / 2};
+  const [x0, x1] = clipped(xs, FRAME_CLIP);
+  const [y0, y1] = clipped(ys, FRAME_CLIP);
+  const pad = 26;
+  const k = Math.min((box.width - pad * 2) / Math.max(x1 - x0, 1e-9),
+                     (box.height - pad * 2) / Math.max(y1 - y0, 1e-9));
+  const cw = (x1 - x0) * k, ch = (y1 - y0) * k;
+  base = {k, x0, y1, cw, ch,
+          ox: (box.width - cw) / 2, oy: (box.height - ch) / 2};
+  clampPan();
   return true;
 }
+
+// Panning is bounded so the map cannot be flung into the void. Zoomed in, the
+// content must keep covering the panel; zoomed out far enough that it does
+// not, it simply centres and the drag does nothing.
+function clampPan() {
+  if (!base || !view) return;
+  const cw = base.cw * zoom, ch = base.ch * zoom;
+  const lx = base.ox * zoom, ly = base.oy * zoom;
+  panX = cw >= view.w ? Math.min(-lx, Math.max(view.w - lx - cw, panX))
+                      : (view.w - cw) / 2 - lx;
+  panY = ch >= view.h ? Math.min(-ly, Math.max(view.h - ly - ch, panY))
+                      : (view.h - ch) / 2 - ly;
+}
+
+// Zoom about a point, so the stop under the cursor stays under the cursor.
+function zoomAt(mx, my, factor) {
+  const next = Math.min(MAX_ZOOM, Math.max(1, zoom * factor));
+  if (next === zoom) return;
+  const f = next / zoom;
+  panX = mx - (mx - panX) * f;
+  panY = my - (my - panY) * f;
+  zoom = next;
+  clampPan();
+}
+
 const px = (lon, lat) => {
   const [x, y] = merc(lon, lat);
-  return [view.ox + (x - view.x0) * view.k, view.oy + (view.y1 - y) * view.k];
+  return [(base.ox + (x - base.x0) * base.k) * zoom + panX,
+          (base.oy + (base.y1 - y) * base.k) * zoom + panY];
 };
+
+// Worst last, so it lands on top. Downtown the dots overlap several deep, and
+// painted in export order a badly delayed vehicle disappears under whichever
+// punctual one happens to follow it in the file. Red is the thing you scan the
+// map for; it has to be the thing you can see. Sorted once per export rather
+// than once per frame, since the delays only change when the file does, and
+// kept apart from DATA.vehicles so the log below keeps its own order.
+let vOrder = null, vOrderAt = null;
+function paintOrder() {
+  if (vOrderAt !== DATA.t0) {
+    vOrderAt = DATA.t0;
+    vOrder = DATA.vehicles.slice().sort(
+      (a, b) => (a.now == null ? -1 : a.now) - (b.now == null ? -1 : b.now));
+  }
+  return vOrder;
+}
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 
 function draw() {
@@ -1016,7 +1182,7 @@ function draw() {
   const S = DATA.network.stops;
   // Theme colours once per frame, not per vehicle.
   const skin = {route:css("--fg-dim"), faint:css("--fg-faint"), dim:css("--dim"),
-                ok:css("--fg"), warn:css("--amber"), bad:css("--red")};
+                ink:css("--ink"), ok:css("--fg"), warn:css("--amber"), bad:css("--red")};
 
   // Lines carry their own colour. Drawn in one phosphor shade the network
   // read as a scribble: five metro lines through the same tunnel became one
@@ -1029,7 +1195,7 @@ function draw() {
   // and it is why a transit map looks like a map and not like wiring.
   for (const pass of ["casing", "colour"]) {
     for (const mode of ["bus", "water", "rail", "tram", "metro"]) {
-      if (!DRAW.has(mode)) continue;
+      if (!lined(mode)) continue;
       const width = WEIGHT[mode];
       ctx.lineJoin = ctx.lineCap = "round";
       for (const r of DATA.network.routes) {
@@ -1065,7 +1231,7 @@ function draw() {
   // is noise, not information.
   const drawnStops = new Set();
   for (const r of DATA.network.routes) {
-    if (!DRAW.has(r.mode) || r.mode === "bus") continue;
+    if (!lined(r.mode) || r.mode === "bus") continue;
     for (const idx of r.path) drawnStops.add(idx);
   }
   ctx.fillStyle = "#0b1016";
@@ -1077,23 +1243,9 @@ function draw() {
     ctx.beginPath(); ctx.arc(x, y, 2.6, 0, 7); ctx.fill(); ctx.stroke();
   }
 
-  // Hub labels, drawn from the shared stop table by name. Each name once:
-  // the table holds one row per platform, and eight overlapping copies of
-  // the same word render as a smudge.
-  ctx.font = "13px " + css("--mono");
-  ctx.fillStyle = skin.dim;
-  const labelled = new Set();
-  for (const s of S) {
-    if (!HUBS.includes(s[2]) || labelled.has(s[2])) continue;
-    const [x, y] = px(s[0], s[1]);
-    if (x < 0 || y < 0 || x > view.w || y > view.h) continue;
-    labelled.add(s[2]);
-    ctx.fillText(s[2], x + 5, y - 4);
-  }
-
   const now = Date.now() / 1000;
   drawnVehicles = [];
-  for (const v of DATA.vehicles) {
+  for (const v of paintOrder()) {
     if (!DRAW.has(v.mode)) continue;
     const t = v.eta > 0 ? Math.min(1, Math.max(0, (now - DATA.t0) / v.eta)) : 0;
     const [x, y] = px(v.lon + (v.tlon - v.lon) * t, v.lat + (v.tlat - v.lat) * t);
@@ -1110,6 +1262,52 @@ function draw() {
                   : v.now < 60 ? skin.ok : v.now < 180 ? skin.warn : skin.bad;
     ctx.fill();
   }
+
+  // Names last, so they sit above the vehicles. Drawn before them, every
+  // useful anchor downtown ended up under the dot cloud, which is exactly
+  // where a reader needs one: without a name the map is coloured confetti on
+  // black. Each gets a dark outline first, so it stays readable wherever it
+  // lands rather than only over empty background.
+  //
+  // At the fitted frame only the handful of hubs a local recognises the shape
+  // by, because every central stop overlaps every other one there. Zoomed in
+  // there is real room, so more names appear as they stop colliding. A map
+  // that answers "which stop is that" once you look closely is the point of
+  // being able to look closely.
+  const fs = Math.max(11, Math.round(TYPE_PX * 0.66));
+  ctx.font = fs + "px " + css("--mono");
+  ctx.lineJoin = "round";
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = "#04060a";
+  const labelled = new Set(), boxes = [];
+  const place = (name, x, y, hub) => {
+    if (!name || labelled.has(name) || boxes.length >= 80) return;
+    const w = ctx.measureText(name).width;
+    const b = [x + 6, y - 5 - fs, x + 6 + w, y - 5];
+    for (const o of boxes)
+      if (b[0] < o[2] && b[2] > o[0] && b[1] < o[3] && b[3] > o[1]) return;
+    boxes.push(b); labelled.add(name);
+    ctx.strokeText(name, x + 6, y - 5);
+    ctx.fillStyle = hub ? skin.ink || "#c9dcd0" : skin.dim;
+    ctx.fillText(name, x + 6, y - 5);
+  };
+  // Hubs first, so that when two names compete for the same patch of canvas
+  // the one people navigate by is the one that survives.
+  for (const s of S) {
+    if (!HUBS.includes(s[2])) continue;
+    const [x, y] = px(s[0], s[1]);
+    if (x < 0 || y < 0 || x > view.w || y > view.h) continue;
+    place(s[2], x, y, true);
+  }
+  if (zoom >= 2) {
+    for (const idx of drawnStops) {
+      const s = S[idx];
+      const [x, y] = px(s[0], s[1]);
+      if (x < 0 || y < 0 || x > view.w || y > view.h) continue;
+      place(s[2], x, y, false);
+    }
+  }
+
   // Count the delay from what is actually on screen, not from the whole
   // region: a train an hour late outside Akershus is not what the picture in
   // front of you is showing.
@@ -1117,16 +1315,71 @@ function draw() {
   const worst = shown.reduce((m, v) => Math.max(m, v.now), 0);
   const late = shown.filter(v => v.now >= 180).length;
   const total = DATA.vehicles.filter(v => DRAW.has(v.mode)).length;
-  document.getElementById("mapinfo").textContent = !DRAW.size ? "kartet er av"
-    : `${drawnVehicles.length} av ${total} vogner i bildet` +
-      (shown.length ? `, ${late} mer enn 3 min sen, verste ${dur(worst)}` : "");
+  // Written only when it changes. This runs on every animation frame, and
+  // assigning textContent sixty times a second forces layout sixty times a
+  // second for a string that turns over once or twice.
+  const info = !DRAW.size ? "kartet er av"
+    : `${drawnVehicles.length} av ${total} vogner` +
+      (shown.length ? ` · ${late} over 3 min · verste ${dur(worst)}` : "");
+  if (info !== lastInfo) {
+    document.getElementById("mapinfo").textContent = lastInfo = info;
+  }
+  const z = zoom > 1.02 ? `${zoom.toFixed(1)}×` : "";
+  if (z !== lastZoom) document.getElementById("mapzoom").textContent = lastZoom = z;
 }
+let lastInfo = null, lastZoom = null;
 addEventListener("resize", () => { view = null; });
 
-// Click a dot: the vehicle reports to the console, in console form.
+/* --- driving the map --- */
+
+// A static overview of Oslo and Akershus in one panel can only ever be a
+// thumbnail: the region is a hundred kilometres across and the interesting
+// part is two. Being able to move and scale the picture is what makes the map
+// an instrument rather than a decoration.
+const at = ev => { const b = cv.getBoundingClientRect();
+                   return [ev.clientX - b.left, ev.clientY - b.top]; };
+
+cv.addEventListener("wheel", ev => {
+  if (!base) return;
+  ev.preventDefault();
+  const [mx, my] = at(ev);
+  // Exponential in the wheel delta, so a trackpad flick and a mouse notch
+  // both feel proportional rather than one of them being unusable.
+  zoomAt(mx, my, Math.exp(-ev.deltaY * (ev.deltaMode === 1 ? 0.05 : 0.0018)));
+}, {passive: false});
+
+let dragFrom = null, dragged = 0;
+cv.addEventListener("pointerdown", ev => {
+  if (!base) return;
+  dragFrom = at(ev); dragged = 0;
+  cv.setPointerCapture(ev.pointerId);
+  cv.classList.add("drag");
+});
+cv.addEventListener("pointermove", ev => {
+  if (!dragFrom) return;
+  const [mx, my] = at(ev);
+  panX += mx - dragFrom[0]; panY += my - dragFrom[1];
+  dragged += Math.abs(mx - dragFrom[0]) + Math.abs(my - dragFrom[1]);
+  dragFrom = [mx, my];
+  clampPan();
+});
+const endDrag = () => { dragFrom = null; cv.classList.remove("drag"); };
+cv.addEventListener("pointerup", endDrag);
+cv.addEventListener("pointercancel", endDrag);
+
+// Double click returns to the fitted frame, which is the only way back out
+// once you have scrolled into a single junction.
+cv.addEventListener("dblclick", ev => {
+  ev.preventDefault();
+  zoom = 1; clampPan();
+});
+
+// Click a dot: the vehicle reports to the console, in console form. A click
+// that ended a drag is not a click on anything; without this guard, pushing
+// the map aside opened whichever vehicle happened to be under the finger.
 cv.addEventListener("click", ev => {
-  const box = cv.getBoundingClientRect();
-  const mx = ev.clientX - box.left, my = ev.clientY - box.top;
+  if (dragged > 4) return;
+  const [mx, my] = at(ev);
   let best = null, bestD = 12 * 12;
   for (const d of drawnVehicles) {
     const dd = (d.x - mx) ** 2 + (d.y - my) ** 2;
@@ -1147,7 +1400,7 @@ cv.addEventListener("click", ev => {
   const w = windowOf(best);
   if (w) {
     print(`  <span class="d">${padr("80 % innen", 16)}</span>` +
-          `<span class="a">${w.from} til ${w.to}</span>` +
+          `<span class="a">${w.text}</span>` +
           `<span class="d">  vindu ${dur(w.width)}</span>`);
   }
   block();
@@ -1180,7 +1433,16 @@ function emit() {
       : `<span class="f">  enige</span>`);
   const feed = document.getElementById("feed");
   feed.appendChild(el);
-  while (feed.childElementCount > 7) feed.removeChild(feed.firstChild);
+  // Keep only as many lines as fit whole. The count was fixed at seven while
+  // the pane's height is a fraction of the window, so on most screens the
+  // bottom line was sliced through the middle: half a row of text sitting
+  // under the last readable one, on every screen size, permanently.
+  const lh = el.offsetHeight || 1;
+  const style = getComputedStyle(feed);
+  const room = feed.clientHeight - parseFloat(style.paddingTop)
+                                 - parseFloat(style.paddingBottom);
+  const fits = Math.max(1, Math.floor(room / lh));
+  while (feed.childElementCount > fits) feed.removeChild(feed.firstChild);
 }
 
 setInterval(() => document.getElementById("clock").textContent =
