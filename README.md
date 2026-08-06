@@ -1,10 +1,23 @@
 # Punktlig
 
+**Live: [punktlig.vercel.app](https://punktlig.vercel.app)**. A terminal you can type into, with every vehicle in Oslo and Akershus on a map you can drag and zoom, updated every ten minutes.
+
 Can a machine learning model beat the official Norwegian public transport delay predictions?
 
-Entur publishes realtime "expected" arrival times for all public transport in Norway. Those estimates are largely naive propagation: a vehicle that is 4 minutes late now is assumed to be 4 minutes late at every future stop. That ignores schedule slack, rush-hour dynamics, bunching, shared-tunnel effects and weather, which is most of what actually drives how delays evolve.
+Yes, by **32.5 percent**, measured on 6 626 611 departures the model never saw during training.
 
-Punktlig continuously archives both Entur's live predictions and the eventual ground truth, then trains a model to out-predict the official estimates. The evaluation is honest: no lookahead, measured against a real production baseline.
+| | Mean error |
+|---|---|
+| The timetable, pretending nothing is ever late | 126.6 s |
+| Carrying the current delay forward | 76.0 s |
+| **The official realtime estimate** | **77.8 s** |
+| **Punktlig** | **52.5 s** |
+
+Entur publishes realtime "expected" arrival times for all public transport in Norway. Those estimates are largely naive propagation: a vehicle that is 4 minutes late now is assumed to be 4 minutes late at every future stop. That ignores schedule slack, rush-hour dynamics, bunching, shared-tunnel effects and weather, which is most of what actually drives how delays evolve. The table above is the evidence: the official estimate is a second and a half worse than simply assuming the delay never changes.
+
+Punktlig continuously archives both Entur's live predictions and the eventual ground truth, then trains a model to out-predict the official estimates. The evaluation is honest: no lookahead, a day-level train/validation split, and the baseline is a real production system rather than a straw man.
+
+It also does something the official feed does not do at all: it says how sure it is. Each departure gets its own arrival interval, and that interval holds 79.9 percent of the time against the 80 percent it promises.
 
 ## Why this dataset is unique
 
@@ -78,7 +91,7 @@ Everything is configured through environment variables:
 | Variable | Default | Purpose |
 |---|---|---|
 | `PUNKTLIG_CLIENT_NAME` | `punktlig-collector` | `ET-Client-Name` header. Set your own; Entur requires an identifying name |
-| `PUNKTLIG_DATASET` | `RUT` | Entur codespaces to poll, comma separated. Trains live under their own codespaces (`VYG`, `GOA`, `SJN`, `FLT`) rather than the local authority |
+| `PUNKTLIG_DATASET` | `RUT` | Entur codespaces to poll, comma separated. Trains live under their own codespaces (`VYG`, `GOA`, `FLT`) rather than the local authority. The secondaries are rotated each cycle, because the feed's rate limit is spent in list order and a fixed list starves whichever stream is last |
 | `PUNKTLIG_AUTHORITY` | `RUT:Authority:RUT` | Authorities used to resolve line to transport mode, comma separated. Every codespace being polled needs one, or its journeys are dropped as unknown |
 | `PUNKTLIG_SECONDARY_EVERY` | `120` | Seconds between polls of the codespaces after the first. The feed rate limits a client across all of them, so only the primary one runs every cycle |
 | `PUNKTLIG_MODES` | `tram,metro` | Which transport modes to keep (`tram,metro,bus,rail,water`) |
@@ -100,6 +113,8 @@ The scope is deliberately small to start (Oslo trams and metro). Widening to bus
 
 Whether collection is actually working is a question about the archive, not about the process. A scheduled task can report Running while nothing has been written for hours, which is exactly what happened here once. `python3 -m punktlig.health` therefore judges the archive: how long since a poll landed, and whether recent polls carried rows or only errors. It exits non-zero when something is wrong, so a scheduler can run it and leave a trail.
 
+That check was written for a total stall, and it missed the other kind. On 2026-08-06 Flytoget was refused with 429 on every cycle for seven hours while Ruter kept polling every minute, so the newest poll in the archive was always seconds old and the verdict stayed OK. A codespace failing alone is not a failed poll: the exception is caught per stream and no row is written at all, which is invisible to a question asked about the newest row overall. Each stream is now also judged on its own measured cadence, so one operator going quiet is a problem rather than a silence.
+
 The collector is built to fail loudly rather than quietly: repeated database errors trigger a reconnect and then a non-zero exit, so a scheduler restarts a clean process instead of leaving one that looks healthy but writes nothing. Response bodies are read under a wall-clock deadline, because a socket timeout only bounds a single read and a trickling response can otherwise hang a poll indefinitely.
 
 Raw gzipped XML responses are also archived under `data/raw/` so the parsed schema can be rebuilt or extended later.
@@ -114,19 +129,32 @@ Raw gzipped XML responses are also archived under `data/raw/` so the parsed sche
 
 ## Results
 
-Validation MAE in seconds on a day split: trained on 2026-07-25 and 2026-07-26, validated on 2026-07-27, a Monday including the morning rush. 167 383 validation rows, none of them seen during training or used for feature selection.
+Validation MAE in seconds on a day split. The model is trained on 19 675 358 rows and validated on 6 626 611 departures from operating dates it never saw, with no row used for both.
 
-| Horizon | n | Timetable | Naive | Entur | Model | Model with Entur as input |
+| Horizon | n | Timetable | Naive | Entur | Punktlig | Gain |
 |---|---|---|---|---|---|---|
-| 0-5 min | 39 570 | 77.4 | 32.0 | 31.7 | 22.8 | 21.6 |
-| 5-10 min | 34 882 | 79.5 | 42.0 | 44.5 | 32.1 | 31.1 |
-| 10-20 min | 50 671 | 83.3 | 53.0 | 56.8 | 43.4 | 42.5 |
-| 20-45 min | 42 260 | 88.8 | 68.9 | 73.3 | 59.0 | 58.0 |
-| Weighted | 167 383 | 82.3 | 50.3 | 52.5 | 40.1 | 39.1 |
+| 0-5 min | 1 409 353 | 119.1 | 45.0 | 47.4 | **31.2** | -16 s |
+| 5-10 min | 1 316 823 | 123.7 | 62.5 | 65.9 | **43.0** | -23 s |
+| 10-20 min | 1 912 451 | 128.0 | 79.6 | 82.5 | **54.6** | -28 s |
+| 20-45 min | 1 987 984 | 132.4 | 103.4 | 102.8 | **72.0** | -31 s |
+| Weighted | 6 626 611 | 126.6 | 76.0 | 77.8 | **52.5** | -25 s |
 
-The model beats Entur on every horizon, by 23 percent weighted, and the margin holds through rush hour. Two days of training data is still a small archive, and these numbers will move as it grows.
+The model beats Entur on every horizon, by 32.5 percent weighted, and the margin widens with the horizon: 34 percent at five minutes and still 30 percent at forty-five. Close to a stop both systems know roughly the same thing; twenty minutes out there is only pattern to go on, and that is where reading the archive pays.
 
-Entur tracks the naive baseline closely and falls behind it beyond five minutes, which is the pattern the project set out to test: the official estimate largely propagates the current delay forward instead of modelling how it evolves.
+Entur tracks the naive baseline closely and falls behind it below twenty minutes, which is the pattern the project set out to test: the official estimate largely propagates the current delay forward instead of modelling how it evolves.
+
+### Per operator
+
+The archive covers five Entur codespaces, and they are not the same problem.
+
+| Operator | Naive | Entur | Punktlig |
+|---|---|---|---|
+| Ruter (bus, tram, metro, ferry) | 74.6 | 77.3 | 52.2 |
+| Vy (regional and local rail) | 108.9 | 111.7 | 90.3 |
+| Go-Ahead | 107.2 | 107.2 | 101.2 |
+| Flytoget | 140.6 | 140.6 | 99.0 |
+
+Trains are a different and harder problem: the naive baseline alone is 201.6 seconds on rail against 74.6 on Ruter, because a train's delay is set by things happening tens of kilometres away. The model still improves on the official estimate for every operator, but the gap it closes on Ruter is the headline, and rail is where the remaining work is.
 
 ### Which direction the errors go
 
@@ -160,12 +188,27 @@ Quantile 0.6 cuts the countdown-lied failures by a fifth, from 28.7 to 22.6 perc
 
 | Horizon | n | Coverage | Target | Interval width |
 |---|---|---|---|---|
-| 0-5 min | 39 570 | 81.3 % | 80 % | 72.9 s |
-| 5-10 min | 34 882 | 76.4 % | 80 % | 93.1 s |
-| 10-20 min | 50 671 | 76.4 % | 80 % | 125.8 s |
-| 20-45 min | 42 260 | 75.8 % | 80 % | 167.5 s |
+| 0-5 min | 1 409 353 | 80.7 % | 80 % | 1 min 46 s |
+| 5-10 min | 1 316 823 | 80.0 % | 80 % | 2 min 20 s |
+| 10-20 min | 1 912 451 | 79.7 % | 80 % | 2 min 55 s |
+| 20-45 min | 1 987 984 | 79.4 % | 80 % | 3 min 42 s |
 
-Overall coverage is 77.4 percent against the 80 percent the interval claims, so the bands are slightly too narrow, and honestly labelled as such. Width grows with the horizon, which is the expected shape: the further ahead the question, the less anyone can know.
+Overall coverage is 79.9 percent against the 80 percent the interval claims. Width grows with the horizon, which is the expected shape: the further ahead the question, the less anyone can know.
+
+### The average window is not any departure's window
+
+That table is a summary, and reading it as a promise gets the interesting half of the result backwards. The bounds are predicted per departure from the same features as the point estimate, so the spread between departures is larger than the spread between horizon buckets. Measured across 300 000 validation rows:
+
+| | Window |
+|---|---|
+| Narrowest quarter | under 1 min 29 s |
+| Middle | 2 min 24 s |
+| Widest quarter | over 3 min 40 s |
+| Widest single departure | 34 min |
+
+Even inside one horizon bucket the range runs from 69 seconds to over half an hour. A ferry on the Nesodden crossing gets a window of seconds, because it has no traffic to sit in and the model has learned that; a regional train on Jæren an hour out gets thirty minutes. Both are correct, and neither is the average.
+
+Measuring this also caught a real bug. Independently fitted quantiles can cross, and some intervals came out negative: an upper bound below the lower one, which is not an interval and quietly flatters both the width and the coverage. The repair belongs at every point the bounds are used, not only in the ladder report where it already existed.
 
 ### Answering the passenger's actual question
 
@@ -293,10 +336,12 @@ All of this is measured on one Sunday with one Saturday of training data, so tre
 - [x] Storage tiering: verified parquet compaction, raw retention, mixed-source replay
 - [x] Training pipeline: LightGBM vs. all baselines on a time-based split
 - [x] Quantile intervals with a coverage check
-- [ ] Real results on weeks of data: ablations, learning curve, per-line error analysis
-- [ ] Backtest dashboard: error per horizon vs. Entur
+- [x] Results on the full archive: 19.7M training rows, 6.6M validation departures, no sampling
+- [x] Live site: realtime map, model vs. Entur per stop, per-departure uncertainty bands
+- [x] Per-operator evaluation, so rail is not hidden inside a Ruter-shaped average
+- [ ] Rail as its own problem: the naive baseline is 201.6 s on trains against 74.6 on Ruter
+- [ ] Re-measure the parked feature groups (bunching, deviation messages) now the archive spans weeks
 - [ ] Serverless collection (Vercel function + external cron + hosted libSQL)
-- [ ] Live site: realtime map, model vs. Entur per stop, uncertainty bands
 
 ## Data sources and attribution
 

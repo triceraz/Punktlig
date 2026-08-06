@@ -134,6 +134,29 @@ def poll_et(conn, modes, save_raw=True, dataset=None):
     }
 
 
+def poll_order(conn):
+    """The codespaces to poll this cycle, secondaries rotated one step.
+
+    The order used to be the order they were configured in, and a cycle
+    spends its request budget as it goes, so whichever codespace came last
+    paid for everything ahead of it. On 2026-08-06 Flytoget sat at the end of
+    the list and was refused with 429 on every single cycle for seven hours
+    while the codespaces before it were fine. It was not a Flytoget problem;
+    it was a last-in-the-list problem, and a fixed list means the same stream
+    is last forever.
+
+    Rotating makes a sustained limit cost each stream a turn rather than
+    costing one of them everything. The primary stays first: it is the bulk
+    of the archive and is polled every cycle regardless.
+    """
+    rest = DATASETS[1:]
+    if len(rest) < 2:
+        return list(DATASETS)
+    n = int(db.kv_get(conn, "et_rotation") or 0) % len(rest)
+    db.kv_set(conn, "et_rotation", str((n + 1) % len(rest)))
+    return DATASETS[:1] + rest[n:] + rest[:n]
+
+
 def poll_once(conn, save_raw=True):
     if _due(conn, "lines_fetched_at", LINES_EVERY) or not line_modes(conn):
         n = refresh_lines(conn)
@@ -142,7 +165,7 @@ def poll_once(conn, save_raw=True):
     modes = line_modes(conn)
     stats = {"journeys": 0, "calls": 0, "dropped": 0, "pages": 0, "ms": 0}
     failures = []
-    for i, dataset in enumerate(DATASETS):
+    for i, dataset in enumerate(poll_order(conn)):
         # Only the primary codespace is polled every cycle; the others run
         # slower so the client stays inside the feed's request budget.
         if i and not _due(conn, f"et_due_{dataset}", SECONDARY_EVERY):

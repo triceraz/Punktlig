@@ -8,6 +8,15 @@ only signal that mattered, the archive, was not.
 So health is measured on the archive: how long since a poll landed, and
 whether recent polls carried rows or only errors. Exit code 1 means
 something is wrong, which is what makes this usable from a scheduler.
+
+That check was written for a total stall, and on 2026-08-06 it missed the
+other kind. Flytoget was refused with 429 on every cycle for seven hours
+while Ruter kept polling every minute, so the newest poll was always
+seconds old and the verdict stayed OK. One operator's share of the archive
+had quietly stopped arriving and nothing said so. A codespace failing
+alone is not a failed poll: the exception is caught per stream and no row
+is written at all, which is invisible to a question asked about the newest
+row overall. Each stream is therefore also judged on its own.
 """
 
 import argparse
@@ -22,8 +31,52 @@ MAX_AGE = timedelta(minutes=10)
 # How far back to look when judging whether polls are succeeding.
 RECENT = timedelta(minutes=30)
 MAX_ERROR_SHARE = 0.5
+# How many of its own cycles a single stream may miss before it counts as
+# stopped. Generous, because one refused poll is ordinary and the feed says
+# so with a 429 that the client already retries.
+STREAM_MISSES = 6
+# Long enough to measure a slow stream's cadence, short enough that a
+# codespace added yesterday is judged on how it behaves today.
+STREAM_WINDOW = timedelta(hours=24)
+MIN_POLLS_TO_JUDGE = 5
 
 LOG_PATH = DATA_DIR / "health.log"
+
+
+def stream_ages(conn, now):
+    """Per codespace: how long since one of its polls succeeded, and how
+    often it normally manages one.
+
+    The cadence is measured rather than read from configuration. The
+    secondaries run on a different clock from the primary, that clock is an
+    environment variable this module never sees, and a check that has to be
+    kept in step with a setting elsewhere is a check that will one day be out
+    of step with it.
+
+    Success is the only thing asked about, not whether rows came back. A
+    codespace with no service at four in the morning still answers, and
+    reading it as dead would cry wolf every night. A rate-limited one does
+    not answer at all, and writes no row: that absence is the signal.
+    """
+    since = (now - STREAM_WINDOW).isoformat()
+    seen = {}
+    for dataset, polled_at in conn.execute(
+        "SELECT dataset, polled_at FROM poll WHERE feed = 'et' AND error IS NULL "
+        "AND polled_at > ? ORDER BY dataset, polled_at", (since,)
+    ):
+        seen.setdefault(dataset, []).append(datetime.fromisoformat(polled_at))
+
+    out = {}
+    for dataset, times in seen.items():
+        if len(times) < MIN_POLLS_TO_JUDGE:
+            continue  # too few to know what normal looks like for this one
+        gaps = sorted((b - a).total_seconds() for a, b in zip(times, times[1:]))
+        out[dataset] = {
+            "age_seconds": (now - times[-1]).total_seconds(),
+            "cadence_seconds": gaps[len(gaps) // 2],
+            "polls": len(times),
+        }
+    return out
 
 
 def check(db_path=DB_PATH, now=None):
@@ -35,6 +88,7 @@ def check(db_path=DB_PATH, now=None):
             "SELECT polled_at, error FROM poll WHERE feed = 'et' "
             "ORDER BY polled_at DESC LIMIT 200"
         ).fetchall()
+        streams = stream_ages(conn, now)
     finally:
         conn.close()
 
@@ -61,11 +115,21 @@ def check(db_path=DB_PATH, now=None):
     if not recent:
         problems.append("no polls at all in the last half hour")
 
+    for dataset, s in sorted(streams.items()):
+        allowed = max(MAX_AGE.total_seconds(), s["cadence_seconds"] * STREAM_MISSES)
+        if s["age_seconds"] > allowed:
+            problems.append(
+                f"{dataset} has not answered for {s['age_seconds'] / 60:.0f} minutes, "
+                f"and normally manages one poll every "
+                f"{s['cadence_seconds'] / 60:.0f} min"
+            )
+
     return {
         "ok": not problems,
         "age_minutes": age.total_seconds() / 60,
         "recent_polls": len(recent),
         "error_share": error_share,
+        "streams": streams,
         "problems": problems,
     }
 
@@ -78,11 +142,20 @@ def main(argv=None):
 
     result = check()
     stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    # Naming every stream on the OK line too, so the log shows which ones were
+    # being watched. A verdict that only says OK cannot tell you afterwards
+    # whether it was looking at the stream that later went quiet.
+    streams = " ".join(
+        f"{name}:{s['age_seconds'] / 60:.0f}m"
+        for name, s in sorted(result.get("streams", {}).items())
+    )
     if result["ok"]:
         line = (f"{stamp} OK last poll {result['age_minutes']:.1f} min ago, "
-                f"{result['recent_polls']} polls in the last half hour")
+                f"{result['recent_polls']} polls in the last half hour"
+                + (f" [{streams}]" if streams else ""))
     else:
-        line = f"{stamp} PROBLEM {'; '.join(result['problems'])}"
+        line = (f"{stamp} PROBLEM {'; '.join(result['problems'])}"
+                + (f" [{streams}]" if streams else ""))
 
     print(line, flush=True)
     if args.log:

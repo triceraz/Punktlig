@@ -99,6 +99,12 @@
   #out::-webkit-scrollbar-thumb { background:var(--fg-faint); }
   #out .ln { white-space:pre; }
   #out .wrap { white-space:pre-wrap; max-width:76ch; }
+  /* A bullet whose continuation lines line up under its own text rather than
+     under the dash. The list used to be pre-wrapped by hand, one array entry
+     per visual line, so every continuation got a dash of its own and six
+     bullets read as nine. */
+  #out .bul { white-space:pre-wrap; max-width:76ch;
+              padding-left:2ch; text-indent:-2ch; }
   #out .blk { margin:0 0 1.2rem; }
   #out .echo { color:var(--dim); margin:.45rem 0 .6rem; }
   #out .echo b { color:var(--fg); font-weight:400; }
@@ -600,14 +606,20 @@ vinduet til akkurat den avgangen.</span>`);
 
 def("grenser", "hva dette ikke kan si", () => {
   heading("begrensninger");
+  // One entry per point, wrapped by the browser. They used to be pre-wrapped
+  // by hand, one entry per visual line, and the dash was printed per entry:
+  // six limitations rendered as nine, three of them starting mid-sentence.
   [
-    "arkivet dekker foreløpig få dager: helg mot hverdag, ferie mot",
-    "skoleår og snø mot barmark er ikke representert ennå",
-    "dekker Ruters område; togene følges også videre utover det",
-    "sier ingenting om innstilte avganger, bare forsinkelser",
-    "målt på avganger modellen aldri har sett, men fra samme dager,",
-    "så tallene er ærlige men ikke endelige",
-  ].forEach(t => print(`<span class="r">-</span> <span>${esc(t)}</span>`));
+    "arkivet dekker uker, ikke år. Ferie mot skoleår, og snø mot barmark, " +
+      "har det ennå ikke sett",
+    "det dekker Ruters område, og togene følges også et stykke utover det",
+    "det sier ingenting om innstilte avganger, bare om forsinkelser",
+    "tallene er målt på avganger modellen aldri har sett under trening, " +
+      "men fra de samme dagene den er trent på, så de er ærlige uten å være " +
+      "endelige",
+    "vinduet er kalibrert på det som er samlet inn til nå. En vinterdag med " +
+      "snøkaos ligger utenfor alt arkivet kjenner",
+  ].forEach(t => print(`<span class="r">-</span> <span>${esc(t)}</span>`, "bul"));
   block();
 });
 
@@ -1533,11 +1545,15 @@ loadData()
         Object.entries(d.score.importance).sort((a2, b2) => b2[1] - a2[1]));
     }
 
+    // Every command worth a first visit gets a button. Eight of the sixteen
+    // used to be reachable only by typing `hjelp` first, and the calibrated
+    // interval, which is the one thing here the official feed cannot do at
+    // all, was among the hidden ones. A terminal may be typed at; it should
+    // not require it before showing what it holds.
     document.getElementById("chips").innerHTML =
-      [["resultat", "resultat"], ["naiv", "naiv"], ["holdeplass", "holdeplass"],
-       ["linje", "linje"], ["arkiv", "arkiv"], ["modell", "modell"],
-       ["metode", "metode"], ["hjelp", "hjelp"]]
-      .map(([label, r]) => `<button data-run="${r}">${label}</button>`).join("");
+      ["resultat", "usikkerhet", "holdeplass", "linje", "naiv", "modell",
+       "metode", "arkiv", "kilder", "grenser", "om", "hjelp"]
+      .map(r => `<button data-run="${r}">${r}</button>`).join("");
 
     const stamp = () => {
       const mins = Math.round(fileAge() / 60);
