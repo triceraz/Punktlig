@@ -364,25 +364,43 @@ def _parquet_files(parquet_dir, sub):
     return inner(parquet_dir, sub)
 
 
-def build(out=OUT, model_dir=None, db_path=DB_PATH):
+def build(out=OUT, model_dir=None, db_path=DB_PATH, took=None):
+    from time import monotonic
+
     from .predict import MODEL_DIR
 
     from .config import DATASETS
+
+    # Timed by phase. This runs every ten minutes and had grown past that, so
+    # the page advertised realtime while showing a picture twenty minutes old,
+    # and a long read also keeps the write-ahead log from ever folding back
+    # into the archive. Without a breakdown the only way to learn which phase
+    # had grown was to guess, and guessing at where time goes is how the last
+    # performance problem here got the wrong explanation for a day.
+    took = took if took is not None else {}
+    mark = lambda name, since: (took.__setitem__(name, monotonic() - since),
+                                monotonic())[1]
 
     model_dir = Path(model_dir or MODEL_DIR)
     # Every codespace in one pass: the history indexes are built from the whole
     # archive, so asking for them once rather than once per codespace is the
     # difference between a gigabyte and a wedged machine.
-    rows = predict(upcoming_rows(datasets=DATASETS), model_dir=model_dir)
+    t = monotonic()
+    upcoming = upcoming_rows(datasets=DATASETS)
+    t = mark("features", t)
+    rows = predict(upcoming, model_dir=model_dir)
+    t = mark("modell", t)
     conn = db.connect(db_path)
     try:
         payload = {
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "network": network(conn, db_path=db_path),
-            "vehicles": vehicles(conn, rows),
-            "score": score(model_dir),
-            "archive": archive(conn),
         }
+        t = mark("nett", t)
+        payload["vehicles"] = vehicles(conn, rows)
+        payload["score"] = score(model_dir)
+        payload["archive"] = archive(conn)
+        t = mark("resten", t)
     finally:
         conn.close()
 
@@ -410,15 +428,19 @@ def main(argv=None):
     # DuckDB jobs at once take the machine down rather than queueing.
     from .joblock import heavy
 
+    took = {}
     with heavy("site", wait=False) as got:
         if not got:
             return 0
-        payload = build(out=args.out, model_dir=args.model)
+        payload = build(out=args.out, model_dir=args.model, took=took)
 
     size = Path(args.out).stat().st_size / 1e6
-    print(f"{len(payload['network']['stops'])} stops, "
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    print(f"{stamp} {len(payload['network']['stops'])} stops, "
           f"{len(payload['network']['routes'])} routes, "
-          f"{len(payload['vehicles'])} vehicles -> {args.out} ({size:.1f} MB)")
+          f"{len(payload['vehicles'])} vehicles -> {args.out} ({size:.1f} MB) "
+          f"[{sum(took.values()):.0f}s: "
+          + ", ".join(f"{k} {v:.0f}s" for k, v in took.items()) + "]")
 
     # The export is state, not source. Publishing it to object storage keeps
     # it out of the repository's history, where ten-minute commits had grown
