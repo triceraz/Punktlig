@@ -168,7 +168,7 @@ def _matrix(rows, features, vocabs):
     return X
 
 
-def predict(rows, model_dir=None, quantile_dir=None):
+def predict(rows, model_dir=None, quantile_dir=None, took=None):
     """Attach the prediction, and the interval around it where one exists.
 
     The point model answers how late; the quantile models answer how wrong
@@ -176,23 +176,40 @@ def predict(rows, model_dir=None, quantile_dir=None):
     is predicted from the same features as the middle: a metro two stops from
     the end is not as uncertain as a regional train an hour out.
     """
+    import time
+
     import lightgbm as lgb
+
+    # Split by what it is doing. Once the history cache landed, this phase went
+    # from 12 seconds to 190 and became most of the export, and there is no
+    # way to tell a slow model file from slow inference from the outside. The
+    # last time a performance question here was answered by reasoning about it
+    # rather than measuring it, the answer was wrong for a day.
+    took = took if took is not None else {}
+    took["rader"] = len(rows)
+    t0 = time.monotonic()
 
     model_dir = Path(model_dir or MODEL_DIR)
     booster = lgb.Booster(model_file=str(model_dir / "punktlig-lgbm.txt"))
     meta = json.loads((model_dir / "punktlig-lgbm.meta.json").read_text())
+    took["last"] = time.monotonic() - t0
 
     # The feature list comes from the meta file, not from the training module:
     # training variants add or drop features, and serving a booster with any
     # other column layout than it was fitted on is silently wrong at best.
+    t0 = time.monotonic()
     X = _matrix(rows, meta["features"], meta["vocabs"])
+    took["matrise"] = time.monotonic() - t0
+    t0 = time.monotonic()
     for row, value in zip(rows, booster.predict(X)):
         row["model_pred_delay_sec"] = float(value)
+    took["gjett"] = time.monotonic() - t0
 
     quantile_dir = Path(quantile_dir or model_dir.parent / "model-quantiles")
     qmeta_path = quantile_dir / "punktlig-quantiles.meta.json"
     if not qmeta_path.exists():
         return rows
+    t0 = time.monotonic()
     qmeta = json.loads(qmeta_path.read_text(encoding="utf-8"))
     QX = _matrix(rows, qmeta["features"], qmeta["vocabs"])
     lo, hi = min(qmeta["quantiles"]), max(qmeta["quantiles"])
@@ -202,6 +219,7 @@ def predict(rows, model_dir=None, quantile_dir=None):
         ).predict(QX)
         for alpha in (lo, hi)
     }
+    took["kvantiler"] = time.monotonic() - t0
     for i, row in enumerate(rows):
         # Independently fitted quantiles can cross, and an interval whose top
         # is below its bottom is not an interval. Sorting the pair is the same

@@ -424,8 +424,11 @@ def build(out=OUT, model_dir=None, db_path=DB_PATH, took=None):
     t = monotonic()
     upcoming = upcoming_rows(datasets=DATASETS)
     t = mark("features", t)
-    rows = predict(upcoming, model_dir=model_dir)
+    inner = {}
+    rows = predict(upcoming, model_dir=model_dir, took=inner)
     t = mark("modell", t)
+    took.update({f"modell.{k}": v for k, v in inner.items() if k != "rader"})
+    took["rader"] = inner.get("rader", len(rows))
     conn = db.connect(db_path)
     try:
         payload = {
@@ -472,11 +475,18 @@ def main(argv=None):
 
     size = Path(args.out).stat().st_size / 1e6
     stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    print(f"{stamp} {len(payload['network']['stops'])} stops, "
-          f"{len(payload['network']['routes'])} routes, "
-          f"{len(payload['vehicles'])} vehicles -> {args.out} ({size:.1f} MB) "
-          f"[{sum(took.values()):.0f}s: "
-          + ", ".join(f"{k} {v:.0f}s" for k, v in took.items()) + "]")
+    # Phases sum to the run; the model's own breakdown is printed beside them
+    # rather than added to them, and the row count is not a duration at all.
+    phases = {k: v for k, v in took.items() if "." not in k and k != "rader"}
+    detail = {k.split(".", 1)[1]: v for k, v in took.items() if k.startswith("modell.")}
+    line = (f"{stamp} {len(payload['network']['stops'])} stops, "
+            f"{len(payload['network']['routes'])} routes, "
+            f"{len(payload['vehicles'])} vehicles -> {args.out} ({size:.1f} MB) "
+            f"[{sum(phases.values()):.0f}s: "
+            + ", ".join(f"{k} {v:.0f}s" for k, v in phases.items()))
+    if detail:
+        line += " | modell: " + ", ".join(f"{k} {v:.1f}s" for k, v in detail.items())
+    print(line + f" | {took.get('rader', 0)} rader]")
 
     # The export is state, not source. Publishing it to object storage keeps
     # it out of the repository's history, where ten-minute commits had grown
