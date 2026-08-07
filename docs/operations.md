@@ -59,6 +59,71 @@ collector's busy timeout and it died on its own first statement, repeatedly.
 The collector now checkpoints every thirty polls, and a blocked checkpoint is
 logged rather than treated as a failure.
 
+That fixed the asking, not the being refused. The log climbed back to 670 MB
+because the export held a read for most of every ten minute window, and the
+checkpoint had nowhere to land. See the next rule: the two are one problem.
+
+## A job on a schedule has to fit inside it
+
+The export ran every ten minutes and took thirty-eight. Runs were skipped by
+the lock, the page that advertises realtime showed a picture up to forty
+minutes old, and the checkpoint above never got a gap to run in.
+
+It had no timing at all, so the only way to learn which part had grown was to
+guess. It reports per phase now:
+
+```
+[2257s: features 1672s, modell 19s, nett 545s, resten 20s]
+```
+
+Both large phases answered questions that do not change on that timescale.
+Route geometry is the shape of the lines; segment runtimes are running means
+over days. Both are cached, geometry for six hours and history for one, and
+the export drops to about a minute.
+
+**What made the history cache safe to add is a number, not an assumption.**
+The one part of the aggregate that does move within an hour is the recent
+network state, the mean delay per stop and per line over the last half hour.
+The ablation table puts that whole feature group at 0.43 seconds of a 52.5
+second error, so an hour of staleness costs at most a fraction of that. A
+cache with an unmeasured cost on the model would not have been worth an
+export that finishes on time.
+
+**The replay never reads either cache.** A training run has to aggregate the
+archive it was actually given, so the cache is opt-in by path rather than on
+by default, and a cached file built for a different bucket size or format is
+refused rather than read. Those would be wrong answers, not slow ones.
+
+## A stream can die on its own, and the machine will look healthy
+
+Flytoget was refused with `HTTP 429` on every cycle for seven hours on
+2026-08-06 while everything else kept collecting. Three faults lined up:
+
+- **The poll order was fixed.** A cycle spends its request budget as it goes,
+  so whichever codespace is last pays for everything ahead of it. FLT was
+  last, so FLT always paid. The secondaries rotate a step per cycle now: a
+  sustained limit costs each stream a turn instead of one of them everything.
+- **SJN was in the list and had never returned anything.** 376 polls, zero
+  calls, zero training rows: SJ Nord runs Trondheim to Bodø and publishes
+  nothing in this region. It was spending a quarter of the secondary budget
+  at Flytoget's direct expense.
+- **The health check could not see it.** It asked how old the newest poll
+  was, and with Ruter polling every minute the answer is always seconds. A
+  codespace failing alone is caught per stream and writes no row at all,
+  which is invisible to a question about the newest row overall.
+
+Health now judges each configured stream against its own measured cadence,
+and the cadence is measured rather than configured so the check cannot drift
+out of step with a setting it never reads. Only configured streams are
+judged: switching one off is not a fault, and the first version of the check
+reported `PROBLEM` every hour about SJN, which had been removed on purpose.
+An alarm that is always on is an alarm nobody reads.
+
+Reading the configured list also meant the list had to exist once. It lived
+in both `run-collector.cmd` and `run-site.cmd`, removing SJN updated one of
+them, and the export went on asking for a stream nobody collected. All four
+tasks read `punktlig-env.cmd` now.
+
 ## Where things live
 
 - archive, parquet, raw XML, logs: `D:\punktlig-data`
