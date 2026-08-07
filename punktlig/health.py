@@ -24,7 +24,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 from . import db
-from .config import DATA_DIR, DB_PATH
+from .config import DATA_DIR, DATASETS, DB_PATH
 
 # A poll a minute means anything older than this is already several misses.
 MAX_AGE = timedelta(minutes=10)
@@ -39,6 +39,8 @@ STREAM_MISSES = 6
 # codespace added yesterday is judged on how it behaves today.
 STREAM_WINDOW = timedelta(hours=24)
 MIN_POLLS_TO_JUDGE = 5
+# What stands in for a cadence that cannot be measured yet.
+UNKNOWN_CADENCE_GRACE = 3600
 
 LOG_PATH = DATA_DIR / "health.log"
 
@@ -57,25 +59,44 @@ def stream_ages(conn, now):
     codespace with no service at four in the morning still answers, and
     reading it as dead would cry wolf every night. A rate-limited one does
     not answer at all, and writes no row: that absence is the signal.
+
+    Only the codespaces currently being collected are judged. Switching one
+    off is not a fault, and the first version of this check could not tell
+    the difference: SJN was removed deliberately and the verdict then read
+    PROBLEM every hour for as long as the archive remembered it. An alarm
+    that is always on is an alarm nobody reads, which would have cost more
+    than the outage it was written for.
     """
+    wanted = set(DATASETS)
     since = (now - STREAM_WINDOW).isoformat()
     seen = {}
     for dataset, polled_at in conn.execute(
         "SELECT dataset, polled_at FROM poll WHERE feed = 'et' AND error IS NULL "
         "AND polled_at > ? ORDER BY dataset, polled_at", (since,)
     ):
+        if wanted and dataset not in wanted:
+            continue
         seen.setdefault(dataset, []).append(datetime.fromisoformat(polled_at))
 
     out = {}
-    for dataset, times in seen.items():
+    for dataset in sorted(wanted or seen):
+        times = seen.get(dataset, [])
+        # A configured codespace with nothing at all is the loudest case, not
+        # the quietest: skipping it for want of history is how a stream that
+        # has been dead longer than the window disappears from the check
+        # entirely, which is the failure this function exists to prevent.
+        if not times:
+            out[dataset] = {"age_seconds": None, "cadence_seconds": None, "polls": 0}
+            continue
+        age = (now - times[-1]).total_seconds()
         if len(times) < MIN_POLLS_TO_JUDGE:
-            continue  # too few to know what normal looks like for this one
+            out[dataset] = {"age_seconds": age, "cadence_seconds": None,
+                            "polls": len(times)}
+            continue
         gaps = sorted((b - a).total_seconds() for a, b in zip(times, times[1:]))
-        out[dataset] = {
-            "age_seconds": (now - times[-1]).total_seconds(),
-            "cadence_seconds": gaps[len(gaps) // 2],
-            "polls": len(times),
-        }
+        out[dataset] = {"age_seconds": age,
+                        "cadence_seconds": gaps[len(gaps) // 2],
+                        "polls": len(times)}
     return out
 
 
@@ -116,13 +137,27 @@ def check(db_path=DB_PATH, now=None):
         problems.append("no polls at all in the last half hour")
 
     for dataset, s in sorted(streams.items()):
-        allowed = max(MAX_AGE.total_seconds(), s["cadence_seconds"] * STREAM_MISSES)
-        if s["age_seconds"] > allowed:
+        if not s["polls"]:
             problems.append(
-                f"{dataset} has not answered for {s['age_seconds'] / 60:.0f} minutes, "
-                f"and normally manages one poll every "
-                f"{s['cadence_seconds'] / 60:.0f} min"
+                f"{dataset} is configured but has not answered once in "
+                f"{STREAM_WINDOW.total_seconds() / 3600:.0f} hours"
             )
+        elif s["cadence_seconds"] is None:
+            # Too few polls to know its rhythm, so an hour stands in for it.
+            if s["age_seconds"] > UNKNOWN_CADENCE_GRACE:
+                problems.append(
+                    f"{dataset} has answered only {s['polls']} times, "
+                    f"last {s['age_seconds'] / 60:.0f} minutes ago"
+                )
+        else:
+            allowed = max(MAX_AGE.total_seconds(),
+                          s["cadence_seconds"] * STREAM_MISSES)
+            if s["age_seconds"] > allowed:
+                problems.append(
+                    f"{dataset} has not answered for "
+                    f"{s['age_seconds'] / 60:.0f} minutes, and normally "
+                    f"manages one poll every {s['cadence_seconds'] / 60:.0f} min"
+                )
 
     return {
         "ok": not problems,
@@ -146,7 +181,8 @@ def main(argv=None):
     # being watched. A verdict that only says OK cannot tell you afterwards
     # whether it was looking at the stream that later went quiet.
     streams = " ".join(
-        f"{name}:{s['age_seconds'] / 60:.0f}m"
+        f"{name}:" + ("aldri" if s["age_seconds"] is None
+                      else f"{s['age_seconds'] / 60:.0f}m")
         for name, s in sorted(result.get("streams", {}).items())
     )
     if result["ok"]:
