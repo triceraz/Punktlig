@@ -78,8 +78,42 @@ guess. It reports per phase now:
 
 Both large phases answered questions that do not change on that timescale.
 Route geometry is the shape of the lines; segment runtimes are running means
-over days. Both are cached, geometry for six hours and history for one, and
-the export drops to about a minute.
+over days. Both are cached, geometry for six hours and history for one.
+
+That cut it to 242 seconds and exposed something the slow phases had been
+hiding. The model phase, previously 12 seconds of a 38 minute run, was now
+190 of 242. Loading and predicting both quantile models in isolation, on a
+matrix of the same shape, cost 4.9 seconds. The difference was not the code:
+
+```
+two quantile models, 119 194 rows, normal priority      4.44 s
+the same work in Windows background mode              119.69 s
+```
+
+The job lock puts analysis into background mode so gigabyte-sized reads stay
+off the collector's disk. On Windows that throttles the CPU to idle as well,
+which for a step that is pure arithmetic is a twenty-seven fold cost for no
+benefit: inference reads nothing and cannot starve a poll. It runs at full
+speed now and hands the priority straight back, checked in both directions
+(3.41 s normal, 48.66 throttled, 3.30 inside the block, 127.63 after it).
+
+The run in full, one line per export as the two fixes landed:
+
+```
+[2257s: features 1672s, modell  19s, nett 545s, resten 20s]
+[ 242s: features   49s, modell 190s, nett   0s, resten  3s]   caches warm
+[  87s: features   60s, modell   8s, nett   0s, resten 19s]   full speed
+```
+
+The published file went from twenty to forty minutes old to under one, and
+the write-ahead log fell from 670 MB to 36 without touching the checkpoint
+code: short reads simply leave it gaps to run in, which is the other half of
+the rule above.
+
+**The export was never inherently thirty-eight minutes.** Half was the
+missing caches and half was a throttle that had been on every phase the whole
+time, unmeasured. It only became visible once everything else was fast enough
+to see past.
 
 **What made the history cache safe to add is a number, not an assumption.**
 The one part of the aggregate that does move within an hour is the recent
