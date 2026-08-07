@@ -40,6 +40,16 @@ MODEL_DIR = Path(DB_PATH).parent / "model"
 # winning per journey, which is what the delta stream is meant to be used for.
 RECENT_POLLS_MINUTES = 20
 
+# The history aggregate for serving, and how stale it may be. An hour is
+# chosen against a measured cost: the only part of it that moves on that
+# timescale is the recent network state, and this project's own ablation puts
+# that whole feature group at 0.43 seconds of a 52.5 second error. What it
+# buys is an export that finishes inside its ten minute schedule instead of
+# taking thirty-eight, which is the difference between a page that says
+# realtime and one that means it.
+HISTORY_CACHE = Path(DB_PATH).parent / "cache" / "history.pickle"
+HISTORY_MAX_AGE = 3600
+
 
 def latest_poll(conn, dataset=None):
     """The newest successful ET poll, optionally within one codespace."""
@@ -120,7 +130,13 @@ def upcoming_rows(archive_path=DB_PATH, parquet_dir=PARQUET_DIR, dataset=None,
     try:
         from .history_sql import SqlHistory
 
-        history = SqlHistory(archive_path, parquet_dir)
+        # Serving reads a cached aggregate; the replay never does, because a
+        # training run has to aggregate the archive it was actually given.
+        # The whole-archive scan is 1 672 seconds and the page it feeds is
+        # redrawn every ten minutes, so recomputing it per export is how the
+        # export outgrew its own schedule.
+        history = SqlHistory(archive_path, parquet_dir,
+                             cache=HISTORY_CACHE, max_age=HISTORY_MAX_AGE)
     except ImportError:  # duckdb is an analysis extra; answers are identical
         _, history_rows, close_history = _open_sources(archive_path, parquet_dir)
         history = HistoryIndex(history_rows)

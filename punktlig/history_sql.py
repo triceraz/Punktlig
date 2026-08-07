@@ -16,11 +16,18 @@ that closed strictly before T are visible, because a bucket still filling
 could contain observations from after T.
 """
 
+import pickle
+import time
 from array import array
+from pathlib import Path
 
 from .config import DB_PATH, PARQUET_DIR
 from .dataset import (BUCKET_SECONDS, DUCK_MEMORY_LIMIT, HistoryLookups,
                       _duck_connect, _parquet_files)
+
+# Bumped whenever the shape of what is stored changes, so an old file is
+# rebuilt rather than misread.
+CACHE_FORMAT = 1
 
 # Every observation of a stop being passed, with the delay it was passed
 # with and the moment that became known. One scan feeds every aggregate.
@@ -152,10 +159,72 @@ class SqlHistory(HistoryLookups):
     matter how many vehicles produced it.
     """
 
+    #: What a cached copy is allowed to be, in seconds, before it is rebuilt.
+    #: Serving passes a path; the replay does not, because a training run must
+    #: aggregate the archive it is actually given.
+    NAMES = ("segments", "stop_delays", "line_delays")
+
     def __init__(self, archive_path=DB_PATH, parquet_dir=PARQUET_DIR,
-                 bucket_seconds=BUCKET_SECONDS, memory_limit=DUCK_MEMORY_LIMIT):
+                 bucket_seconds=BUCKET_SECONDS, memory_limit=DUCK_MEMORY_LIMIT,
+                 cache=None, max_age=3600):
         self.bucket = bucket_seconds
         self.passes = {}  # bunching is parked; no per-pass detail is kept
+        if cache and self._load(Path(cache), bucket_seconds, max_age):
+            return
+        self._aggregate(archive_path, parquet_dir, bucket_seconds, memory_limit)
+        if cache:
+            self._save(Path(cache), bucket_seconds)
+
+    def _load(self, path, bucket_seconds, max_age):
+        """Read a recent aggregate from disk, or say it could not.
+
+        Serving recomputed this from the whole archive every ten minutes to
+        draw a page: 1 672 seconds of a 2 257 second export against a ten
+        minute schedule, so the export never finished before the next was due
+        and the page that advertises realtime showed a picture forty minutes
+        old. The long read also held the write-ahead log open, which is why it
+        had grown to 670 MB.
+
+        Almost nothing here moves on that timescale. Segment runtimes are
+        running means over days. What does move is the recent network state,
+        the mean delay per stop and per line over the last half hour, and the
+        project's own ablation puts that whole feature group at 0.43 seconds
+        of a 52.5 second error. An hour of staleness can cost at most a
+        fraction of that, against an export that finishes inside its schedule.
+        """
+        try:
+            if time.time() - path.stat().st_mtime > max_age:
+                return False
+            with open(path, "rb") as fh:
+                blob = pickle.load(fh)
+        except (OSError, ValueError, pickle.UnpicklingError, EOFError):
+            return False
+        # A file written by another format, or for another bucket size, is not
+        # a slow answer but a wrong one.
+        if (blob.get("format") != CACHE_FORMAT
+                or blob.get("bucket") != bucket_seconds):
+            return False
+        for name in self.NAMES:
+            if name not in blob:
+                return False
+            setattr(self, name, blob[name])
+        return True
+
+    def _save(self, path, bucket_seconds):
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            blob = {"format": CACHE_FORMAT, "bucket": bucket_seconds}
+            blob.update({name: getattr(self, name) for name in self.NAMES})
+            # Written beside the target and moved into place, so an export
+            # killed mid-write cannot leave half a file for the next one.
+            tmp = path.with_suffix(".tmp")
+            with open(tmp, "wb") as fh:
+                pickle.dump(blob, fh, protocol=pickle.HIGHEST_PROTOCOL)
+            tmp.replace(path)
+        except OSError:
+            pass  # an unwritable cache costs time, not correctness
+
+    def _aggregate(self, archive_path, parquet_dir, bucket_seconds, memory_limit):
         con = _duck_connect(archive_path, memory_limit)
         try:
             columns = ("journey_ref, operating_date, line_ref, direction, call_type, "
