@@ -37,11 +37,19 @@ def step_aside():
     mode lowers I/O priority as well as CPU, which is the part that matters
     here, and it is released automatically when the process exits.
     """
+    _background(BACKGROUND_BEGIN, nice=10)
+
+
+# Windows takes both of these through SetPriorityClass on the current process.
+BACKGROUND_BEGIN = 0x00100000
+BACKGROUND_END = 0x00200000
+
+
+def _background(mode, nice):
     if sys.platform == "win32":
         import ctypes
         from ctypes import wintypes
 
-        PROCESS_MODE_BACKGROUND_BEGIN = 0x00100000
         try:
             kernel32 = ctypes.windll.kernel32
             # The process handle is a pointer. Left to ctypes' default of a
@@ -50,15 +58,42 @@ def step_aside():
             kernel32.GetCurrentProcess.restype = wintypes.HANDLE
             kernel32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
             kernel32.SetPriorityClass.restype = wintypes.BOOL
-            kernel32.SetPriorityClass(kernel32.GetCurrentProcess(),
-                                      PROCESS_MODE_BACKGROUND_BEGIN)
+            kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), mode)
         except Exception:
             pass
     else:
         try:
-            os.nice(10)
+            os.nice(nice)
         except Exception:
             pass
+
+
+@contextmanager
+def at_full_speed():
+    """Leave background mode for a stretch that is compute, not disk.
+
+    Background mode exists to keep gigabyte-sized reads off the disk the
+    collector is writing to. On Windows it throttles the CPU to idle as well,
+    and on a step that is pure arithmetic that is not a courtesy but a
+    twenty-seven fold slowdown: loading and predicting both quantile models
+    over 119 194 rows costs 4.4 seconds at normal priority and 119.7 in
+    background mode, measured on this machine rather than assumed.
+
+    That was most of the site export. Inference is a few seconds of CPU on six
+    cores and reads nothing, so it cannot starve a poll the way a replay
+    reading the whole archive can. The mode is taken up again afterwards, so
+    everything that does touch the disk keeps yielding to the collector.
+
+    On POSIX this is a no-op in practice: `nice` only goes up without
+    privileges, so the process stays where `step_aside` put it. Said here
+    rather than discovered later, since the Windows path is the one this
+    project runs on and the difference is silent.
+    """
+    _background(BACKGROUND_END, nice=-10)
+    try:
+        yield
+    finally:
+        _background(BACKGROUND_BEGIN, nice=10)
 
 # Three separate concerns, so three locks, because a lock that guards more
 # than its reason costs something real. Holding the DuckDB lock through a

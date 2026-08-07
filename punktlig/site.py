@@ -425,7 +425,14 @@ def build(out=OUT, model_dir=None, db_path=DB_PATH, took=None):
     upcoming = upcoming_rows(datasets=DATASETS)
     t = mark("features", t)
     inner = {}
-    rows = predict(upcoming, model_dir=model_dir, took=inner)
+    # Inference is arithmetic, not disk, and the job lock's background mode
+    # throttles the CPU as well as the disk. Measured on this machine, that
+    # made this step twenty-seven times slower and turned it into most of the
+    # export. Everything around it keeps yielding to the collector.
+    from .joblock import at_full_speed
+
+    with at_full_speed():
+        rows = predict(upcoming, model_dir=model_dir, took=inner)
     t = mark("modell", t)
     took.update({f"modell.{k}": v for k, v in inner.items() if k != "rader"})
     took["rader"] = inner.get("rader", len(rows))
