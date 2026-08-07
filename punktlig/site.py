@@ -19,11 +19,12 @@ the page says so.
 import argparse
 import json
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import db
-from .config import DB_PATH, PARQUET_DIR
+from .config import DATA_DIR, DB_PATH, PARQUET_DIR
 from .predict import predict, upcoming_rows
 
 OUT = Path(__file__).resolve().parent.parent / "web" / "data.json"
@@ -101,7 +102,42 @@ WHERE a.stop_ref IS NOT NULL AND b.stop_ref IS NOT NULL
 """
 
 
-def network(conn, db_path=DB_PATH, recent_polls=600):
+# Route geometry is read from the last six hundred polls, which is around
+# nine million rows through the sqlite scanner, and it cost 545 seconds of a
+# 2 257 second export against a ten minute schedule. What it produces is the
+# shape of the lines, and a line's shape changes when its route changes, not
+# every ten minutes. So it is computed on its own clock and read from disk in
+# between. Nothing the model sees comes from here: this is the picture, not
+# the features.
+NETWORK_CACHE = Path(DATA_DIR) / "cache" / "network.json"
+NETWORK_MAX_AGE = 6 * 3600
+
+
+def network(conn, db_path=DB_PATH, recent_polls=600, cache=NETWORK_CACHE,
+            max_age=NETWORK_MAX_AGE):
+    """The lines as they actually run, recomputed at most every few hours."""
+    cache = Path(cache) if cache else None
+    if cache and cache.exists() and time.time() - cache.stat().st_mtime < max_age:
+        try:
+            return json.loads(cache.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass  # a truncated cache is not worth failing an export over
+
+    result = build_network(conn, db_path=db_path, recent_polls=recent_polls)
+    if cache:
+        try:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            # Written beside the target and moved into place, so a run that
+            # dies mid-write cannot leave half a file for the next one to read.
+            tmp = cache.with_suffix(".tmp")
+            tmp.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(cache)
+        except OSError:
+            pass  # an unwritable cache costs time, not correctness
+    return result
+
+
+def build_network(conn, db_path=DB_PATH, recent_polls=600):
     """The lines as they actually run: one path of real positions per route.
 
     Drawn from the archive rather than from a schematic, so the shape on
