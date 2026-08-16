@@ -131,6 +131,8 @@ Raw gzipped XML responses are also archived under `data/raw/` so the parsed sche
 
 Validation MAE in seconds on a day split. The model is trained on 19 675 358 rows and validated on 6 626 611 departures from operating dates it never saw, with no row used for both.
 
+One boundary is drawn on purpose: the entire archive is from the summer of 2026. The question this project answers is whether a model can out-predict the official estimate on identical information, and a summer can answer that, since both sides see the same season. What the numbers do not cover is how the model would fare on conditions it has never seen: school-year traffic, snow, winter darkness. That would be a second project, not a longer wait.
+
 | Horizon | n | Timetable | Naive | Entur | Punktlig | Gain |
 |---|---|---|---|---|---|---|
 | 0-5 min | 1 409 353 | 119.1 | 45.0 | 47.4 | **31.2** | -16 s |

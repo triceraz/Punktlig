@@ -610,15 +610,17 @@ def("grenser", "hva dette ikke kan si", () => {
   // by hand, one entry per visual line, and the dash was printed per entry:
   // six limitations rendered as nine, three of them starting mid-sentence.
   [
-    "arkivet dekker uker, ikke år. Ferie mot skoleår, og snø mot barmark, " +
-      "har det ennå ikke sett",
+    "hele arkivet er fra sommeren 2026, og det er et valg, ikke et venteproblem: " +
+      "prosjektet svarer på om modellen slår appen på like vilkår, og det kan " +
+      "en sommer svare på. Skolestart, snø og vintermørke er utenfor det " +
+      "denne modellen kjenner",
     "det dekker Ruters område, og togene følges også et stykke utover det",
     "det sier ingenting om innstilte avganger, bare om forsinkelser",
     "tallene er målt på avganger modellen aldri har sett under trening, " +
       "men fra de samme dagene den er trent på, så de er ærlige uten å være " +
       "endelige",
-    "vinduet er kalibrert på det som er samlet inn til nå. En vinterdag med " +
-      "snøkaos ligger utenfor alt arkivet kjenner",
+    "vinduet er kalibrert på sommertrafikk. En vinterdag med snøkaos ligger " +
+      "utenfor alt arkivet kjenner",
   ].forEach(t => print(`<span class="r">-</span> <span>${esc(t)}</span>`, "bul"));
   block();
 });
