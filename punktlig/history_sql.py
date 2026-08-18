@@ -23,7 +23,7 @@ from pathlib import Path
 
 from .config import DB_PATH, PARQUET_DIR
 from .dataset import (BUCKET_SECONDS, DUCK_MEMORY_LIMIT, HistoryLookups,
-                      _duck_connect, _parquet_files)
+                      _duck_connect, _hot_exclusion, _parquet_files)
 
 # Bumped whenever the shape of what is stored changes, so an old file is
 # rebuilt rather than misread.
@@ -230,11 +230,15 @@ class SqlHistory(HistoryLookups):
             columns = ("journey_ref, operating_date, line_ref, direction, call_type, "
                        "stop_ref, order_no, aimed_arr, actual_arr, aimed_dep, actual_dep, "
                        "cancelled")
+            files = _parquet_files(parquet_dir, "calls")
+            # The same two-tier exclusion as the replay: a day whose deletion
+            # failed after a verified export would otherwise weigh twice in
+            # every aggregate here as well.
             parts = [
                 f"SELECT {columns}, p.polled_at FROM src.call_snapshot c "
-                "JOIN src.poll p ON p.poll_id = c.poll_id"
+                "JOIN src.poll p ON p.poll_id = c.poll_id "
+                f"WHERE 1=1{_hot_exclusion(files)}"
             ]
-            files = _parquet_files(parquet_dir, "calls")
             if files:
                 parts.append(f"SELECT {columns}, polled_at FROM read_parquet({files!r})")
             con.execute(f"CREATE OR REPLACE VIEW calls AS {' UNION ALL '.join(parts)}")

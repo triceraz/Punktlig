@@ -47,14 +47,6 @@ COUNTS = {
     "weather": "SELECT COUNT(*) FROM weather_snapshot WHERE substr(polled_at, 1, 10) = ?",
 }
 
-DELETES = [
-    "DELETE FROM call_snapshot WHERE poll_id IN "
-    "(SELECT poll_id FROM poll WHERE substr(polled_at, 1, 10) = ?)",
-    "DELETE FROM poll WHERE substr(polled_at, 1, 10) = ?",
-    "DELETE FROM weather_snapshot WHERE substr(polled_at, 1, 10) = ?",
-]
-
-
 def _log(msg):
     print(msg, flush=True)
 
@@ -94,9 +86,36 @@ def export_day(duck, conn, day, parquet_dir):
             )
 
 
+# Rows deleted per transaction. Bounded so the statement's working state
+# stays small: transaction bookkeeping lives in SQLite's temp storage, which
+# on Windows means the user's temp directory on C:.
+DELETE_BATCH = 500_000
+
+
 def delete_day(conn, day):
-    for stmt in DELETES:
-        conn.execute(stmt, (day,))
+    """Delete one exported day from the hot tier, in bounded transactions.
+
+    This used to be one DELETE per table, which makes the transaction the
+    size of the day: 26 million call rows for 2026-08-14. It died with
+    "database or disk is full" three nights running, after the export had
+    already been verified, so the day stayed in both tiers and every replay
+    read it twice; the dataset carried each of its rows at a measured ratio
+    of 1.999. The export/verify/delete split is what made that survivable,
+    and bounded batches are what stop it from recurring.
+    """
+    while True:
+        cur = conn.execute(
+            "DELETE FROM call_snapshot WHERE rowid IN ("
+            "  SELECT c.rowid FROM call_snapshot c"
+            "  JOIN poll p ON p.poll_id = c.poll_id"
+            "  WHERE substr(p.polled_at, 1, 10) = ? LIMIT ?)",
+            (day, DELETE_BATCH),
+        )
+        conn.commit()
+        if cur.rowcount < DELETE_BATCH:
+            break
+    conn.execute("DELETE FROM poll WHERE substr(polled_at, 1, 10) = ?", (day,))
+    conn.execute("DELETE FROM weather_snapshot WHERE substr(polled_at, 1, 10) = ?", (day,))
     conn.commit()
 
 
@@ -173,7 +192,16 @@ def main(argv=None):
     parser.add_argument("--raw-keep-days", type=int, default=RAW_KEEP_DAYS,
                         help="days of raw XML to keep")
     args = parser.parse_args(argv)
-    compact(keep_days=args.keep_days, raw_keep_days=args.raw_keep_days)
+
+    # Compaction attaches DuckDB to the archive, and two DuckDB jobs on it at
+    # once take the machine down; that rule already had a lock, this module
+    # just never took it. The nightly run overlapped the ten-minute site
+    # export on every night the export ran long. Waiting is right here: the
+    # night run is asked for once, and the export finishes in about a minute.
+    from .joblock import heavy
+
+    with heavy("compact"):
+        compact(keep_days=args.keep_days, raw_keep_days=args.raw_keep_days)
     return 0
 
 

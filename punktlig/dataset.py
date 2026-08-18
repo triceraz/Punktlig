@@ -354,6 +354,27 @@ def _parquet_files(parquet_dir, sub):
     return sorted(str(p) for p in directory.glob("*.parquet")) if directory.is_dir() else []
 
 
+def _hot_exclusion(files, column="p.polled_at"):
+    """SQL keeping the hot archive's copy of a day out when parquet has it.
+
+    The two tiers are meant to be disjoint: compaction deletes a day from hot
+    SQLite only after its parquet export is verified. But the deletion can
+    fail on its own, and did: on 2026-08-17 and the two nights after, the
+    delete died with "database or disk is full" after the export had already
+    been verified, so 2026-08-14 sat in both tiers. The replay reads the
+    tiers with UNION ALL, so every one of that day's rows entered the dataset
+    exactly twice, measured at a ratio of 1.999 against distinct keys, and
+    the same signature shows the July days were doubled in the previous
+    dataset too. Parquet wins because it is the verified copy; the hot rows
+    are the leftovers of a failed delete.
+    """
+    days = sorted({Path(f).stem[:10] for f in files})
+    if not days:
+        return ""
+    quoted = ", ".join(f"'{d}'" for d in days)
+    return f" AND substr({column}, 1, 10) NOT IN ({quoted})"
+
+
 def _iter_duck(con, sql, params=None):
     cur = con.execute(sql, params or [])
     while True:
@@ -473,10 +494,13 @@ def _open_sources(archive_path, parquet_dir, sample=0):
     con = _duck_connect(archive_path)
 
     weather_sql = f"SELECT {WEATHER_COLS} FROM src.weather_snapshot"
-    call_sql = SQLITE_CALL_SQL.format(prefix="src.", sample=clause)
+    call_sql = SQLITE_CALL_SQL.format(
+        prefix="src.", sample=clause + _hot_exclusion(call_files))
     weather_files = _parquet_files(parquet_dir, "weather")
     if weather_files:
-        weather_sql += f" UNION ALL SELECT {WEATHER_COLS} FROM read_parquet(?)"
+        weather_sql = (f"{weather_sql} WHERE 1=1"
+                       f"{_hot_exclusion(weather_files, column='polled_at')}"
+                       f" UNION ALL SELECT {WEATHER_COLS} FROM read_parquet(?)")
     call_sql = (
         f"SELECT {CALL_COLS} FROM ({call_sql}) UNION ALL "
         f"SELECT {CALL_COLS} FROM read_parquet(?) c "
@@ -557,13 +581,22 @@ def _build(archive_path, out_path, parquet_dir, sample, bucket_seconds,
             out.commit()
             batch = []
 
-    for row in iter_rows(cursor, history, weather, situations):
-        batch.append(row)
-        n_rows += 1
-        if len(batch) >= 5000:
-            flush()
+    # The row loop is arithmetic, not disk. Under the job lock's background
+    # mode the CPU runs at idle priority, measured at a 27x cost on pure
+    # compute, and this loop wrote rows at 26 MB a minute for ten hours. At
+    # full speed its I/O is still pull-paced by the row processing itself,
+    # about a dozen MB a second at worst, which cannot starve a poll the way
+    # the aggregation's bulk scans can. Those stay in background mode above.
+    from .joblock import at_full_speed
 
-    flush()
+    with at_full_speed():
+        for row in iter_rows(cursor, history, weather, situations):
+            batch.append(row)
+            n_rows += 1
+            if len(batch) >= 5000:
+                flush()
+        flush()
+
     close_sources()
     out.close()
     return n_rows

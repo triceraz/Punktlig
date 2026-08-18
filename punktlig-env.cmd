@@ -11,6 +11,14 @@ rem innstilling som en dag ikke er det.
 rem Data ligger paa D: fordi C: bare har ca 10 GB ledig og raa-arkivet alene
 rem vokser til over 11 GB
 set PUNKTLIG_DATA=D:\punktlig-data
+
+rem SQLite og DuckDB legger midlertidige filer i %%TEMP%%, som bor paa C: med
+rem ca 9 GB ledig. Slettingen av en eksportert dag dode tre netter paa rad med
+rem "database or disk is full" pga dette, og dagen ble liggende i begge lag.
+rem Alt midlertidig skal dit dataene bor: paa D.
+if not exist "D:\punktlig-data\tmp" mkdir "D:\punktlig-data\tmp"
+set TMP=D:\punktlig-data\tmp
+set TEMP=D:\punktlig-data\tmp
 set PUNKTLIG_CLIENT_NAME=triceraz-punktlig
 set PUNKTLIG_MET_UA=punktlig-collector/0.1 (https://github.com/triceraz/Punktlig)
 
