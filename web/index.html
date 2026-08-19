@@ -72,8 +72,11 @@
   #bar .lights i:nth-child(1) { background:#8a3b34; }
   #bar .lights i:nth-child(2) { background:#8a7134; }
   #bar .lights i:nth-child(3) { background:var(--fg-dim); }
+  /* min-width:0 is what makes the ellipsis reachable: a flex item's default
+     minimum is its content, so without it the title refused to shrink and
+     pushed the clock off the right edge on a phone. */
   #bar .title { color:var(--ink); white-space:nowrap; overflow:hidden;
-                text-overflow:ellipsis; }
+                text-overflow:ellipsis; min-width:0; }
   #bar .grow { flex:1; }
   #bar .on { color:var(--fg); white-space:nowrap; }
   #bar .on::before { content:"● "; animation:beat 2.4s ease-in-out infinite; }
