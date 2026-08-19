@@ -23,6 +23,7 @@ from .dataset import (
     HistoryIndex,
     ROW_COLS,
     SituationIndex,
+    WEATHER_COLS,
     WeatherIndex,
     _open_sources,
     _situation_rows,
@@ -91,7 +92,8 @@ def recent_polls(conn, dataset, minutes=RECENT_POLLS_MINUTES):
 
 
 def upcoming_rows(archive_path=DB_PATH, parquet_dir=PARQUET_DIR, dataset=None,
-                  datasets=None):
+                  datasets=None, require_history_cache=False,
+                  history_max_age=HISTORY_MAX_AGE):
     """Feature rows for every stop still ahead of every running vehicle.
 
     `datasets` asks for several codespaces at once, which matters because the
@@ -136,14 +138,24 @@ def upcoming_rows(archive_path=DB_PATH, parquet_dir=PARQUET_DIR, dataset=None,
         # redrawn every ten minutes, so recomputing it per export is how the
         # export outgrew its own schedule.
         history = SqlHistory(archive_path, parquet_dir,
-                             cache=HISTORY_CACHE, max_age=HISTORY_MAX_AGE)
+                             cache=HISTORY_CACHE, max_age=history_max_age,
+                             require_cache=require_history_cache)
     except ImportError:  # duckdb is an analysis extra; answers are identical
         _, history_rows, close_history = _open_sources(archive_path, parquet_dir)
         history = HistoryIndex(history_rows)
         close_history()
-    weather_rows, _, close_weather = _open_sources(archive_path, parquet_dir)
-    weather = WeatherIndex(weather_rows)
-    close_weather()
+    # Weather comes from the hot archive alone. Serving asks as-of-now, and
+    # the hot tier always holds at least the last two days of forecasts;
+    # reading the whole parquet history through DuckDB bought nothing and was
+    # the one thing still forcing every export to queue behind the DuckDB
+    # lock, so a replay froze the page for as long as it ran.
+    conn = db.connect(archive_path)
+    try:
+        weather = WeatherIndex(conn.execute(
+            f"SELECT {WEATHER_COLS} FROM weather_snapshot ORDER BY polled_at"
+        ).fetchall())
+    finally:
+        conn.close()
     situations = SituationIndex(_situation_rows(archive_path))
 
     return [

@@ -114,7 +114,7 @@ NETWORK_MAX_AGE = 6 * 3600
 
 
 def network(conn, db_path=DB_PATH, recent_polls=600, cache=NETWORK_CACHE,
-            max_age=NETWORK_MAX_AGE):
+            max_age=NETWORK_MAX_AGE, require_cache=False):
     """The lines as they actually run, recomputed at most every few hours."""
     cache = Path(cache) if cache else None
     if cache and cache.exists() and time.time() - cache.stat().st_mtime < max_age:
@@ -123,6 +123,11 @@ def network(conn, db_path=DB_PATH, recent_polls=600, cache=NETWORK_CACHE,
         except (OSError, ValueError):
             pass  # a truncated cache is not worth failing an export over
 
+    if require_cache:
+        # Same promise as the history cache: a lock-free export must not
+        # open DuckDB, and rebuilding the geometry is DuckDB.
+        raise RuntimeError(f"network cache unusable ({cache}) "
+                           "and this caller must not rebuild it")
     result = build_network(conn, db_path=db_path, recent_polls=recent_polls)
     if cache:
         try:
@@ -400,7 +405,8 @@ def _parquet_files(parquet_dir, sub):
     return inner(parquet_dir, sub)
 
 
-def build(out=OUT, model_dir=None, db_path=DB_PATH, took=None):
+def build(out=OUT, model_dir=None, db_path=DB_PATH, took=None,
+          duck_allowed=True, cache_max_age=None):
     from time import monotonic
 
     from .predict import MODEL_DIR
@@ -421,8 +427,12 @@ def build(out=OUT, model_dir=None, db_path=DB_PATH, took=None):
     # Every codespace in one pass: the history indexes are built from the whole
     # archive, so asking for them once rather than once per codespace is the
     # difference between a gigabyte and a wedged machine.
+    from .predict import HISTORY_MAX_AGE
+
     t = monotonic()
-    upcoming = upcoming_rows(datasets=DATASETS)
+    upcoming = upcoming_rows(datasets=DATASETS,
+                             require_history_cache=not duck_allowed,
+                             history_max_age=cache_max_age or HISTORY_MAX_AGE)
     t = mark("features", t)
     inner = {}
     # Inference is arithmetic, not disk, and the job lock's background mode
@@ -440,7 +450,9 @@ def build(out=OUT, model_dir=None, db_path=DB_PATH, took=None):
     try:
         payload = {
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "network": network(conn, db_path=db_path),
+            "network": network(conn, db_path=db_path,
+                               require_cache=not duck_allowed,
+                               max_age=cache_max_age or NETWORK_MAX_AGE),
         }
         t = mark("nett", t)
         payload["vehicles"] = vehicles(conn, rows)
@@ -469,16 +481,52 @@ def main(argv=None):
 
     load_env(Path(DATA_DIR) / "punktlig.env")
 
-    # This runs every ten minutes, so a run that collides with an hour-long
-    # replay is simply skipped: the next one is never far away, and two
-    # DuckDB jobs at once take the machine down rather than queueing.
+    # The DuckDB lock is only needed when DuckDB will actually be opened,
+    # which with warm caches is never: history, geometry and weather all
+    # come from files and hot SQLite. Skipping the lock then is what keeps
+    # the page publishing while a replay holds it for hours; before this,
+    # every export during a replay was skipped and the page sat frozen for
+    # the whole run. The freshness margin is what makes the promise safe: a
+    # cache has to outlive the export that trusts it, so one that expires
+    # in the next ten minutes counts as stale here even though SqlHistory
+    # itself would still accept it.
     from .joblock import heavy
+    from .predict import HISTORY_CACHE, HISTORY_MAX_AGE
+
+    def outlives(path, max_age, margin=600):
+        try:
+            return time.time() - Path(path).stat().st_mtime < max_age - margin
+        except OSError:
+            return False
+
+    # How old a cache may be when the lock is taken and the choice is between
+    # an aging aggregate and a frozen page. The aggregate's only hour-fresh
+    # part is the recent network state, a feature group the ablation prices
+    # at 0.43 seconds of a 52.5 second error; a page that stops updating for
+    # the length of a replay costs the one thing it promises.
+    STALE_LIMIT = 24 * 3600
 
     took = {}
-    with heavy("site", wait=False) as got:
+    mode = "fersk cache, uten laas"
+    if outlives(HISTORY_CACHE, HISTORY_MAX_AGE) and outlives(NETWORK_CACHE,
+                                                             NETWORK_MAX_AGE):
+        payload = build(out=args.out, model_dir=args.model, took=took,
+                        duck_allowed=False)
+    else:
+        with heavy("site", wait=False) as got:
+            if got:
+                mode = "med duckdb"
+                payload = build(out=args.out, model_dir=args.model, took=took)
         if not got:
-            return 0
-        payload = build(out=args.out, model_dir=args.model, took=took)
+            # The lock is held, typically by a replay that will hold it for
+            # hours. Serve from whatever cache exists rather than freezing.
+            if not (outlives(HISTORY_CACHE, STALE_LIMIT)
+                    and outlives(NETWORK_CACHE, STALE_LIMIT)):
+                print("skipped: lock held and no usable cache")
+                return 0
+            mode = "aldrende cache, laasen er opptatt"
+            payload = build(out=args.out, model_dir=args.model, took=took,
+                            duck_allowed=False, cache_max_age=STALE_LIMIT)
 
     size = Path(args.out).stat().st_size / 1e6
     stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -493,7 +541,7 @@ def main(argv=None):
             + ", ".join(f"{k} {v:.0f}s" for k, v in phases.items()))
     if detail:
         line += " | modell: " + ", ".join(f"{k} {v:.1f}s" for k, v in detail.items())
-    print(line + f" | {took.get('rader', 0)} rader]")
+    print(line + f" | {took.get('rader', 0)} rader | {mode}]")
 
     # The export is state, not source. Publishing it to object storage keeps
     # it out of the repository's history, where ten-minute commits had grown

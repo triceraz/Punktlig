@@ -166,11 +166,19 @@ class SqlHistory(HistoryLookups):
 
     def __init__(self, archive_path=DB_PATH, parquet_dir=PARQUET_DIR,
                  bucket_seconds=BUCKET_SECONDS, memory_limit=DUCK_MEMORY_LIMIT,
-                 cache=None, max_age=3600):
+                 cache=None, max_age=3600, require_cache=False):
         self.bucket = bucket_seconds
         self.passes = {}  # bunching is parked; no per-pass detail is kept
         if cache and self._load(Path(cache), bucket_seconds, max_age):
             return
+        # A lock-free export promises it will not open DuckDB, and the
+        # whole-archive aggregation is DuckDB. Falling back silently here
+        # would break that promise exactly when a replay holds the lock,
+        # which is the two-jobs-at-once case that takes the machine down.
+        # Failing is fine: the caller runs again in ten minutes.
+        if require_cache:
+            raise RuntimeError(
+                f"history cache unusable ({cache}) and this caller must not aggregate")
         self._aggregate(archive_path, parquet_dir, bucket_seconds, memory_limit)
         if cache:
             self._save(Path(cache), bucket_seconds)
