@@ -98,7 +98,26 @@ def operator_rows(dataset_path):
         conn.close()
 
 
-def load_matrix(dataset_path, valid_days, valid_on=None):
+def sample_clause(keep):
+    """Keep `keep` sixteenths of all journeys, chosen by the journey ref's
+    last hex character: deterministic, and atomic per journey so no journey
+    straddles the sample boundary. The same trick the dataset builder uses.
+
+    It exists here because the clean archive outgrew the machine: 120 million
+    rows at twenty float32 features is 9.6 GB for the matrix alone, plus
+    LightGBM's own working copy, on a 16 GB desktop that is also running the
+    collector, whose missed polls cannot be refetched. A sampled model with
+    the machine alive beats a full one with the archive full of holes.
+    """
+    from .dataset import SAMPLE_DIGITS
+
+    if not keep or keep >= len(SAMPLE_DIGITS):
+        return ""
+    digits = ", ".join(f"'{d}'" for d in SAMPLE_DIGITS[:keep])
+    return f" AND lower(substr(journey_ref, -1)) IN ({digits})"
+
+
+def load_matrix(dataset_path, valid_days, valid_on=None, sample=0):
     """Stream the dataset straight into float32 matrices.
 
     `load_rows` materialises every row as a tuple of Python objects, which
@@ -114,10 +133,11 @@ def load_matrix(dataset_path, valid_days, valid_on=None):
     Returns (X, y, entur, split, vocabs, valid_dates, n) where valid_dates is
     empty when the archive spans too few days to hold one out.
     """
+    flt = ROW_FILTER + sample_clause(sample)
     conn = db.connect(dataset_path)
     try:
         dates = [d for (d,) in conn.execute(
-            f"SELECT DISTINCT operating_date FROM training_row WHERE {ROW_FILTER}"
+            f"SELECT DISTINCT operating_date FROM training_row WHERE {flt}"
             " ORDER BY 1")]
         if valid_on:
             # Named days must exist, or the split silently validates on
@@ -138,14 +158,14 @@ def load_matrix(dataset_path, valid_days, valid_on=None):
         for col in CATEGORICAL:
             values = [v for (v,) in conn.execute(
                 f"SELECT DISTINCT {col} FROM training_row"
-                f" WHERE {ROW_FILTER} AND NOT {is_valid} AND {col} IS NOT NULL"
+                f" WHERE {flt} AND NOT {is_valid} AND {col} IS NOT NULL"
                 " ORDER BY 1")]
             vocabs[col] = {v: i + 1 for i, v in enumerate(values)}  # 0 stays "unknown"
 
         n = conn.execute(
-            f"SELECT COUNT(*) FROM training_row WHERE {ROW_FILTER}").fetchone()[0]
+            f"SELECT COUNT(*) FROM training_row WHERE {flt}").fetchone()[0]
         split = conn.execute(
-            f"SELECT COUNT(*) FROM training_row WHERE {ROW_FILTER} AND NOT {is_valid}"
+            f"SELECT COUNT(*) FROM training_row WHERE {flt} AND NOT {is_valid}"
         ).fetchone()[0]
 
         X = np.full((n, len(FEATURES)), np.nan, dtype=np.float32)
@@ -161,7 +181,7 @@ def load_matrix(dataset_path, valid_days, valid_on=None):
             SELECT {', '.join(FEATURES)}, label_delay_sec, entur_pred_delay_sec,
                    substr(line_ref, 1, instr(line_ref, ':') - 1)
             FROM training_row
-            WHERE {ROW_FILTER}
+            WHERE {flt}
             ORDER BY {is_valid}, polled_at
         """)
         n_numeric = len(NUMERIC)
@@ -322,6 +342,10 @@ def main(argv=None):
                         help="fit this quantile of the delay instead of its median. "
                              "Above 0.5 the model leans towards announcing a later "
                              "arrival, which is the failure passengers mind least")
+    parser.add_argument("--sample", type=int, default=0, metavar="N",
+                        help="train on N sixteenths of all journeys, journey-"
+                             "atomic. The full clean archive no longer fits "
+                             "the machine's memory")
     args = parser.parse_args(argv)
 
     if args.alpha is not None:
@@ -356,7 +380,10 @@ def main(argv=None):
 
 def _train(args):
     X, y, entur, split, vocabs, valid_dates, n, sources = load_matrix(
-        args.dataset, args.valid_days, args.valid_date)
+        args.dataset, args.valid_days, args.valid_date,
+        sample=getattr(args, "sample", 0))
+    if getattr(args, "sample", 0):
+        print(f"journey sample: {args.sample}/16 of all journeys")
     if n < 1000:
         print(f"only {n} usable rows; collect more data before training")
         return 1

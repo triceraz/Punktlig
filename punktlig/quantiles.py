@@ -81,7 +81,8 @@ def coverage(y, lo, hi):
     return inside / len(y)
 
 
-def train_quantiles(dataset_path, valid_days=1, quantiles=QUANTILES, valid_on=None):
+def train_quantiles(dataset_path, valid_days=1, quantiles=QUANTILES, valid_on=None,
+                    sample=0):
     """Fit one model per quantile on the same features as the point model.
 
     Reads through `load_matrix` rather than materialising rows as Python
@@ -90,7 +91,9 @@ def train_quantiles(dataset_path, valid_days=1, quantiles=QUANTILES, valid_on=No
     model hit.
     """
     X, y, entur, split, vocabs, valid_dates, n, _ = load_matrix(
-        dataset_path, valid_days, valid_on)
+        dataset_path, valid_days, valid_on, sample=sample)
+    if sample:
+        print(f"journey sample: {sample}/16 of all journeys")
     if valid_dates:
         print(f"day split: validating on {', '.join(valid_dates)}")
     else:
@@ -207,6 +210,8 @@ def main(argv=None):
     parser.add_argument("--ladder", action="store_true",
                         help="fit the full quantile ladder and check whether its "
                              "probabilities hold up, instead of the three-point interval")
+    parser.add_argument("--sample", type=int, default=0, metavar="N",
+                        help="train on N sixteenths of all journeys, journey-atomic")
     args = parser.parse_args(argv)
 
     # Fitting reads plain SQLite, so it can run beside the site export and
@@ -220,7 +225,8 @@ def main(argv=None):
             return 0
 
         X, y, _, split, preds, boosters, vocabs = train_quantiles(
-            args.dataset, valid_days=args.valid_days, valid_on=args.valid_date
+            args.dataset, valid_days=args.valid_days, valid_on=args.valid_date,
+            sample=args.sample
         )
         summary = evaluate(X, split, y, preds)
 
