@@ -158,6 +158,19 @@ in both `run-collector.cmd` and `run-site.cmd`, removing SJN updated one of
 them, and the export went on asking for a stream nobody collected. All four
 tasks read `punktlig-env.cmd` now.
 
+## Never VACUUM the live archive
+
+On 2026-08-19 the nightly compaction, after its deletes, ran VACUUM on an
+archive that had grown to 42 GB. It took the exclusive lock at 02:20 UTC and
+held it until compaction exited at 11:18. The collector wrote nothing for
+eight hours, morning rush included, and those polls cannot be refetched. The
+per-stream health check screamed all night, which is how the hole was found
+the same morning rather than weeks later.
+
+VACUUM is gone from the schedule. Free pages are reused, so an unvacuumed
+file costs only disk on a drive with hundreds of gigabytes free. If file
+size ever matters, vacuum by hand with collection stopped on purpose.
+
 ## Where things live
 
 - archive, parquet, raw XML, logs: `D:\punktlig-data`

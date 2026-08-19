@@ -120,12 +120,19 @@ def delete_day(conn, day):
 
 
 def vacuum(conn):
-    """Reclaim space, but never at the cost of the collector.
+    """Reclaim space by hand, never on a schedule, never beside the collector.
 
-    VACUUM rewrites the whole database and takes an exclusive lock, so a
-    collector mid-write blocks it, and on 2026-07-27 the collision left the
-    collector's connection unable to write for hours. Space can wait for the
-    next run; the archive cannot.
+    The nightly run used to call this. On 2026-08-19 the archive had grown to
+    42 GB, VACUUM won the lock at 02:20 UTC and held it for nine hours, and
+    the collector wrote nothing until compaction exited at 11:18. Eight hours
+    of polls are gone for good, the morning rush included. The skip-if-locked
+    guard below protects the wrong direction: it saves VACUUM from a busy
+    collector, not the collector from a long VACUUM.
+
+    Free pages are reused by SQLite, so an unvacuumed file costs disk space
+    on a drive with hundreds of gigabytes free, and nothing else. If the file
+    size itself ever matters, run this deliberately, with collection stopped
+    on purpose and the health check told to expect it.
     """
     try:
         conn.execute("VACUUM")
@@ -168,11 +175,12 @@ def compact(db_path=DB_PATH, parquet_dir=PARQUET_DIR, keep_days=HOT_KEEP_DAYS,
                     export_day(duck, conn, day, parquet_dir)
             finally:
                 duck.close()
-            # Phase 2: only after every export is verified, delete and reclaim space.
+            # Phase 2: only after every export is verified, delete. Space is
+            # deliberately not reclaimed here: see vacuum() for the night it
+            # cost eight hours of archive.
             for day in days:
                 delete_day(conn, day)
                 _log(f"compacted {day}")
-            vacuum(conn)
             conn.commit()
         else:
             _log("no completed days old enough to compact")
