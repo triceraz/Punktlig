@@ -181,6 +181,15 @@
        forcing the page to. */
     #out { overflow-x:auto; }
   }
+  @media (max-width:560px) {
+    /* The window dressing loses to the data. Lights, hostname, freshness and
+       clock add up to more than a phone is wide, and of the four only the
+       freshness stamp tells the reader anything; even shrunk to nothing the
+       rest pushed the clock six pixels off the edge and gave the whole page
+       a sideways scroll. */
+    #bar .lights, #bar .title { display:none; }
+    #bar .on { overflow:hidden; text-overflow:ellipsis; min-width:0; }
+  }
 </style>
 </head>
 <body>
