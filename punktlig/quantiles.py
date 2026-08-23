@@ -218,7 +218,9 @@ def main(argv=None):
     # only has to exclude another fit.
     from .joblock import FITTING_LOCK, heavy
 
-    with heavy("quantiles", name=FITTING_LOCK):
+    # Same reasoning as train: arithmetic, pull-paced reads, and the
+    # background mode's memory priority makes a large fit thrash forever.
+    with heavy("quantiles", name=FITTING_LOCK, background=False):
         if args.ladder:
             ladder_report(args.dataset, valid_days=args.valid_days,
                           valid_on=args.valid_date)

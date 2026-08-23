@@ -374,7 +374,11 @@ def main(argv=None):
     # to keep publishing meanwhile.
     from .joblock import FITTING_LOCK, heavy
 
-    with heavy("train", name=FITTING_LOCK):
+    # Fitting is arithmetic over a matrix it loads once; its reads are
+    # pull-paced fetchmany batches, not the bulk scans the background mode
+    # exists to keep off the collector's disk. Under that mode the previous
+    # attempt thrashed for four days without finishing.
+    with heavy("train", name=FITTING_LOCK, background=False):
         return _train(args)
 
 

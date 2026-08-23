@@ -148,7 +148,7 @@ def lock_path(data_dir=None, name=LOCK_NAME):
 
 @contextmanager
 def heavy(label, wait=True, poll_seconds=20, data_dir=None, log=print,
-          name=LOCK_NAME):
+          name=LOCK_NAME, background=True):
     """Hold the machine-wide DuckDB lock for the duration of the block.
 
     Yields True when the lock was taken. With `wait=False` it yields False
@@ -172,10 +172,17 @@ def heavy(label, wait=True, poll_seconds=20, data_dir=None, log=print,
         handle.truncate()
         handle.write(f"{label} pid={os.getpid()}\n".encode())
         handle.flush()
-        if name != COLLECTOR_LOCK:
+        if name != COLLECTOR_LOCK and background:
             # Analysis jobs yield the disk to the collector. The collector
             # keeps its normal priority: a missed poll cannot be recovered,
             # a slower training run can.
+            #
+            # `background=False` is for jobs that are arithmetic, not bulk
+            # disk. Windows' background mode drops memory priority along with
+            # CPU and I/O, and a LightGBM fit under it sat for four days with
+            # 56 CPU-hours consumed and a 30 MB working set for a matrix
+            # measured in gigabytes: every page it touched was evicted before
+            # it came back. Such a job never finishes; it just burns.
             step_aside()
         try:
             yield True
