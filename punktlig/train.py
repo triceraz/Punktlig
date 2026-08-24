@@ -59,8 +59,15 @@ PARAMS = {
 }
 
 
+# The unary plus on horizon_sec is load-bearing. Without it the planner
+# takes idx_row_horizon and does one random main-table lookup per candidate
+# row; nearly every row passes the horizon cut, so the index filters nothing
+# while destroying locality, and on a 30 GB table that cannot fit in memory
+# the training's loader sat twelve hours in what a sequential scan does in
+# twelve minutes. Every reader of this filter wants most of the table, so
+# every reader wants the scan.
 ROW_FILTER = (
-    f"ABS(label_delay_sec) < {MAX_ABS_DELAY} AND horizon_sec < {MAX_HORIZON}"
+    f"ABS(label_delay_sec) < {MAX_ABS_DELAY} AND +horizon_sec < {MAX_HORIZON}"
     " AND entur_pred_delay_sec IS NOT NULL AND current_delay_sec IS NOT NULL"
 )
 
