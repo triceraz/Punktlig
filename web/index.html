@@ -1027,13 +1027,18 @@ function boot() {
   print(`<span class="f">[</span><span class="g">ok</span><span class="f">]</span> ` +
         `<span class="d">modell ........ trent på ${NB(DATA.score.trained_on)} rader</span>`);
   print(`<span class="f">[</span><span class="g">ok</span><span class="f">]</span> ` +
-        `<span class="d">sanntid ....... ${DATA.vehicles.length} vogner ute akkurat nå</span>`);
+        `<span class="d">${fileAge() > 24 * 3600
+           ? `siste bilde ... ${DATA.vehicles.length} vogner i siste øyeblikksbilde`
+           : `sanntid ....... ${DATA.vehicles.length} vogner ute akkurat nå`}</span>`);
   blank();
   SPEED = 10;
   heading("kort fortalt");
   wrap(`Ruter-appen sier «2 min». Alle vet hva det betyr: kanskje 2, kanskje 6.
-Denne maskinen har notert hvert eneste anslag appen har vist og målt det
-mot hva som faktisk skjedde.`);
+Denne maskinen noterte hvert eneste anslag appen viste og målte det mot
+hva som faktisk skjedde.`);
+  blank();
+  wrap(`<span class="d">Arkivet ble samlet inn sommeren 2026 og er nå lukket. Tallene under er
+endelige, målt på avganger modellen aldri så under trening.</span>`);
   blank();
 
   // The finding belongs on the first screen, not a paragraph describing it.
@@ -1101,11 +1106,16 @@ loadData()
        "metode", "arkiv", "kilder", "grenser", "om", "hjelp"]
       .map(r => `<button data-run="${r}">${r}</button>`).join("");
 
+    // Collection ended on 2026-08-26. A counter that says "43 000 minutes
+    // ago" reads as a broken page; a closed archive is a fact, not a delay.
+    const ENDED_AFTER = 24 * 3600;
     const stamp = () => {
       const mins = Math.round(fileAge() / 60);
-    document.getElementById("feedstate").textContent =
-        mins < 2 ? "sanntid" : `data fra ${new Date(DATA.t0 * 1000)
-          .toLocaleTimeString("nb-NO", {hour12:false})} (${mins} min siden)`;
+      document.getElementById("feedstate").textContent =
+        fileAge() > ENDED_AFTER
+          ? "arkiv 25. juli – 26. august 2026 · innsamlingen er avsluttet"
+          : mins < 2 ? "sanntid" : `data fra ${new Date(DATA.t0 * 1000)
+            .toLocaleTimeString("nb-NO", {hour12:false})} (${mins} min siden)`;
     };
     stamp(); setInterval(stamp, 30_000);
 
