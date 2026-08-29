@@ -8,7 +8,8 @@ pins the reading.
 
 import unittest
 
-from punktlig.quantiles import LEVELS, enforce_monotonic, probability_within
+from punktlig.quantiles import (LEVELS, enforce_monotonic, probability_within,
+                                scaled_interval)
 
 
 class MonotonicTest(unittest.TestCase):
@@ -59,6 +60,23 @@ class LadderTest(unittest.TestCase):
     def test_levels_are_sorted_and_include_the_median(self):
         self.assertEqual(list(LEVELS), sorted(LEVELS))
         self.assertIn(0.5, LEVELS)
+
+
+class ScaledIntervalTest(unittest.TestCase):
+    """The width factor that closes the coverage gap without refitting."""
+
+    def test_factor_one_is_identity(self):
+        self.assertEqual(scaled_interval(-30.0, 90.0, 1.0), (-30.0, 90.0))
+
+    def test_widening_keeps_the_midpoint(self):
+        low, high = scaled_interval(-30.0, 90.0, 1.5)
+        self.assertAlmostEqual((low + high) / 2, 30.0)
+        self.assertAlmostEqual(high - low, 180.0)
+
+    def test_a_collapsed_interval_stays_collapsed(self):
+        """The ferries earn their nought-second window; scaling must not
+        invent uncertainty the model did not predict."""
+        self.assertEqual(scaled_interval(5.0, 5.0, 1.3), (5.0, 5.0))
 
 
 if __name__ == "__main__":

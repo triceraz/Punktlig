@@ -232,11 +232,17 @@ def predict(rows, model_dir=None, quantile_dir=None, took=None):
         for alpha in (lo, hi)
     }
     took["kvantiler"] = time.monotonic() - t0
+    # Calibration measured on validation: 1.0 when absent, above it when the
+    # raw interval under-covered its promise. See quantiles.scaled_interval.
+    from .quantiles import scaled_interval
+
+    factor = float(qmeta.get("width_scale", 1.0))
     for i, row in enumerate(rows):
         # Independently fitted quantiles can cross, and an interval whose top
         # is below its bottom is not an interval. Sorting the pair is the same
         # repair the ladder already applies.
         low, high = sorted((float(bounds[lo][i]), float(bounds[hi][i])))
+        low, high = scaled_interval(low, high, factor)
         row["pred_low_sec"] = low
         row["pred_high_sec"] = high
     return rows

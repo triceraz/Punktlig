@@ -35,6 +35,21 @@ QUANTILES = (0.1, 0.5, 0.9)
 LEVELS = (0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95)
 
 
+def scaled_interval(low, high, factor):
+    """Widen or narrow an interval about its midpoint.
+
+    The fitted interval held 78.9 percent against an 80 percent promise on
+    the hard validation days. A single width factor, measured on validation
+    and stored in the model's meta, closes that gap without refitting: the
+    midpoint is the model's opinion, the factor is the calibration. Kept as
+    its own function so the arithmetic the serving path applies is the same
+    arithmetic the calibration measured, and testable without a booster.
+    """
+    mid = (low + high) / 2.0
+    half = (high - low) / 2.0 * factor
+    return mid - half, mid + half
+
+
 def enforce_monotonic(ladder):
     """Sort each row's quantiles. Independently fitted quantiles can cross,
     and a 90th percentile below the 50th is not a distribution."""
