@@ -1,17 +1,19 @@
 # Punktlig
 
-**Live: [punktlig.vercel.app](https://punktlig.vercel.app)**. A terminal you can type into, with every vehicle in Oslo and Akershus on a map you can drag and zoom, updated every ten minutes.
+**Live: [punktlig.vercel.app](https://punktlig.vercel.app)**. A terminal you can type into. The archive was collected 25 July to 26 August 2026 and is now closed; the numbers below are final.
 
 Can a machine learning model beat the official Norwegian public transport delay predictions?
 
-Yes, by **32.5 percent**, measured on 6 626 611 departures the model never saw during training.
+Yes. Validated on the two heaviest delay days in the archive, 3 412 515 departures the model never saw during training:
 
 | | Mean error |
 |---|---|
-| The timetable, pretending nothing is ever late | 126.6 s |
-| Carrying the current delay forward | 76.0 s |
-| **The official realtime estimate** | **77.8 s** |
-| **Punktlig** | **52.5 s** |
+| The timetable, pretending nothing is ever late | 239.7 s |
+| Carrying the current delay forward | 108.5 s |
+| **The official realtime estimate** | **107.9 s** |
+| **Punktlig** | **87.2 s** |
+
+**19.2 percent less error than the official estimate, on exactly the information the official estimate has.** On those days the official system barely beats assuming the delay never changes; the model takes another twenty seconds per departure off it, and the margin grows with the horizon.
 
 Entur publishes realtime "expected" arrival times for all public transport in Norway. Those estimates are largely naive propagation: a vehicle that is 4 minutes late now is assumed to be 4 minutes late at every future stop. That ignores schedule slack, rush-hour dynamics, bunching, shared-tunnel effects and weather, which is most of what actually drives how delays evolve. The table above is the evidence: the official estimate is a second and a half worse than simply assuming the delay never changes.
 
@@ -129,21 +131,25 @@ Raw gzipped XML responses are also archived under `data/raw/` so the parsed sche
 
 ## Results
 
-Validation MAE in seconds on a day split. The model is trained on 19 675 358 rows and validated on 6 626 611 departures from operating dates it never saw, with no row used for both.
+Validation MAE in seconds on a day split. The final model is trained on 39 787 625 rows (a journey-atomic 6/16 sample of the 120-million-row clean dataset, sized to the machine's memory) and validated on 2026-08-18 and 2026-08-19, the two heaviest delay days in the archive, both after every training day.
 
 One boundary is drawn on purpose: the entire archive is from the summer of 2026. The question this project answers is whether a model can out-predict the official estimate on identical information, and a summer can answer that, since both sides see the same season. What the numbers do not cover is how the model would fare on conditions it has never seen: school-year traffic, snow, winter darkness. That would be a second project, not a longer wait.
 
-| Horizon | n | Timetable | Naive | Entur | Punktlig | Gain |
-|---|---|---|---|---|---|---|
-| 0-5 min | 1 409 353 | 119.1 | 45.0 | 47.4 | **31.2** | -16 s |
-| 5-10 min | 1 316 823 | 123.7 | 62.5 | 65.9 | **43.0** | -23 s |
-| 10-20 min | 1 912 451 | 128.0 | 79.6 | 82.5 | **54.6** | -28 s |
-| 20-45 min | 1 987 984 | 132.4 | 103.4 | 102.8 | **72.0** | -31 s |
-| Weighted | 6 626 611 | 126.6 | 76.0 | 77.8 | **52.5** | -25 s |
+| Horizon | n | Timetable | Naive | Entur | Punktlig |
+|---|---|---|---|---|---|
+| 0-5 min | 729 163 | 209.0 | 54.0 | 48.5 | **47.3** |
+| 5-10 min | 676 713 | 222.5 | 81.0 | 78.3 | **67.0** |
+| 10-20 min | 987 052 | 240.7 | 111.7 | 112.2 | **89.4** |
+| 20-45 min | 1 019 587 | 272.1 | 162.7 | 165.8 | **127.2** |
+| Weighted | 3 412 515 | 239.7 | 108.5 | 107.9 | **87.2** |
 
-The model beats Entur on every horizon, by 32.5 percent weighted, and the margin widens with the horizon: 34 percent at five minutes and still 30 percent at forty-five. Close to a stop both systems know roughly the same thing; twenty minutes out there is only pattern to go on, and that is where reading the archive pays.
+The model beats the official estimate on every horizon, and the margin grows from 2.5 percent at five minutes to 23 percent at forty-five. Close to a stop both systems know roughly the same thing; twenty minutes out there is only pattern to go on, and that is where reading the archive pays. On these hard days the official estimate is statistically tied with carrying the delay forward, which is the pattern the project set out to test: it largely propagates the current delay instead of modelling how it evolves.
 
-Entur tracks the naive baseline closely and falls behind it below twenty minutes, which is the pattern the project set out to test: the official estimate largely propagates the current delay forward instead of modelling how it evolves.
+Three footnotes that belong next to the headline, not in an appendix:
+
+- **Earlier builds of this table were measured on calmer mid-summer days and reported a 32.5 percent margin.** Harder days give a smaller percentage and a larger absolute story: the official estimate loses its edge over the naive baseline exactly when passengers need it most, while the model keeps twenty seconds per departure.
+- **Earlier row counts were roughly doubled by a tiering bug.** A day whose hot-tier deletion failed after a verified parquet export sat in both tiers, and the replay's UNION ALL read it twice, at a measured ratio of 1.999 against distinct keys. The guard, the bounded deletion and the rebuilt clean dataset are all in the commit history; duplication does not move an error mean, so earlier MAE figures stand, but the counts were inflated and are corrected everywhere.
+- **This validation is in practice a measurement of Ruter.** Trains are about one percent of the validation rows (VYG 78 202, GOA 8 946, FLT 5 467 filtered rows against 9.1 million for Ruter), because that is their share of those days' traffic, not because anything was dropped.
 
 ### Per operator
 
@@ -156,7 +162,7 @@ The archive covers five Entur codespaces, and they are not the same problem.
 | Go-Ahead | 107.2 | 107.2 | 101.2 |
 | Flytoget | 140.6 | 140.6 | 99.0 |
 
-Trains are a different and harder problem: the naive baseline alone is 201.6 seconds on rail against 74.6 on Ruter, because a train's delay is set by things happening tens of kilometres away. The model still improves on the official estimate for every operator, but the gap it closes on Ruter is the headline, and rail is where the remaining work is.
+Trains are a different and harder problem: the naive baseline alone is 201.6 seconds on rail against 74.6 on Ruter, because a train's delay is set by things happening tens of kilometres away. The model still improves on the official estimate for every operator, but the gap it closes on Ruter is the headline, and rail is where the remaining work is. These per-operator figures are from the earlier calm-days build; the final hard-days validation is 99 percent Ruter and cannot resolve such a split.
 
 ### Which direction the errors go
 
@@ -188,14 +194,16 @@ Quantile 0.6 cuts the countdown-lied failures by a fifth, from 28.7 to 22.6 perc
 
 `python3 -m punktlig.quantiles` fits the 10th, 50th and 90th percentile of the delay, which turns a point estimate into an arrival window. Entur publishes no uncertainty at all, so this is a capability the official feed lacks rather than a sharper version of one it has.
 
+Final numbers, on the same two heavy validation days as the point model:
+
 | Horizon | n | Coverage | Target | Interval width |
 |---|---|---|---|---|
-| 0-5 min | 1 409 353 | 80.7 % | 80 % | 1 min 46 s |
-| 5-10 min | 1 316 823 | 80.0 % | 80 % | 2 min 20 s |
-| 10-20 min | 1 912 451 | 79.7 % | 80 % | 2 min 55 s |
-| 20-45 min | 1 987 984 | 79.4 % | 80 % | 3 min 42 s |
+| 0-5 min | 729 163 | 81.5 % | 80 % | 2 min 38 s |
+| 5-10 min | 676 713 | 79.8 % | 80 % | 3 min 25 s |
+| 10-20 min | 987 052 | 78.7 % | 80 % | 4 min 18 s |
+| 20-45 min | 1 019 587 | 76.6 % | 80 % | 5 min 34 s |
 
-Overall coverage is 79.9 percent against the 80 percent the interval claims. Width grows with the horizon, which is the expected shape: the further ahead the question, the less anyone can know.
+Overall coverage is 78.9 percent against the 80 percent the interval claims, measured on days with three times the normal delay level. The windows are about fifty percent wider than on calm days (where the same models held 79.9 percent), which is exactly what an honest uncertainty estimate should do when the days get harder: widen, rather than keep promising calm-day precision.
 
 ### The average window is not any departure's window
 
