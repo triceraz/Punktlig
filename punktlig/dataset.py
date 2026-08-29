@@ -798,9 +798,14 @@ if __name__ == "__main__":
                         help="build history with the in-memory Python pre-pass "
                              "instead of DuckDB (needs --sample on a large archive)")
     args = parser.parse_args()
-    from .joblock import heavy  # the site export runs every ten minutes
+    from .joblock import heavy
 
-    with heavy("dataset"):
+    # Background mode existed to protect the collector's polls, which could
+    # not be refetched. The collector was retired on 2026-08-26 and the
+    # archive is closed, so there is nothing left to protect: the replay that
+    # crawled for three days at idle priority is an evening's work at full
+    # speed, on a machine with no other duty.
+    with heavy("dataset", background=False):
         written = build(sample=args.sample, sql_history=not args.python_history)
     if args.sample and args.sample < 16:
         print(f"sampled {args.sample}/16 of journeys")
