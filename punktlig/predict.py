@@ -217,6 +217,26 @@ def predict(rows, model_dir=None, quantile_dir=None, took=None):
         row["model_pred_delay_sec"] = float(value)
     took["gjett"] = time.monotonic() - t0
 
+    # Trains get their own model where one exists. They are a rounding error
+    # in the shared model's training mix, so it treats them as unusually long
+    # buses; a rail-only fit on the same features measured 97.0 seconds
+    # weighted against the official estimate's 136.2 on the same validation
+    # days, a margin the shared model never approached on rail. The intervals
+    # still come from the shared quantiles, which the README says out loud.
+    rail_dir = model_dir.parent / "model-rail"
+    rail_meta_path = rail_dir / "punktlig-lgbm.meta.json"
+    if rail_meta_path.exists():
+        rail_idx = [i for i, row in enumerate(rows)
+                    if (row.get("line_ref") or "").split(":")[0]
+                    in ("VYG", "GOA", "FLT")]
+        if rail_idx:
+            rmeta = json.loads(rail_meta_path.read_text(encoding="utf-8"))
+            rbooster = lgb.Booster(model_file=str(rail_dir / "punktlig-lgbm.txt"))
+            sub = [rows[i] for i in rail_idx]
+            RX = _matrix(sub, rmeta["features"], rmeta["vocabs"])
+            for i, value in zip(rail_idx, rbooster.predict(RX)):
+                rows[i]["model_pred_delay_sec"] = float(value)
+
     quantile_dir = Path(quantile_dir or model_dir.parent / "model-quantiles")
     qmeta_path = quantile_dir / "punktlig-quantiles.meta.json"
     if not qmeta_path.exists():
